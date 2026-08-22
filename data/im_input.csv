@@ -1,0 +1,81 @@
+0,1
+marketID,BR16
+runType,Full Pallets + Loose Boxes
+containerList,"[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0]"
+effectiveContainerList,"[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0]"
+layerList,"[1, 2]"
+container_priority,"{1.0: 1, 2.0: 1, 3.0: 1, 4.0: 1, 5.0: 1, 6.0: 1, 7.0: 1, 8.0: 1, 9.0: 1, 10.0: 1, 11.0: 1, 12.0: 1, 13.0: 0.9}"
+container_length,15
+container_width,2.5
+container_height,2.8
+positionList,"[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]"
+frontPositionList,"[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]"
+rearPositionList,"[13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]"
+leftPositionList,"[1, 3, 5, 7, 9, 11, 13, 13, 15, 17, 19, 21, 23, 25, 27, 29]"
+rightPositionList,"[2, 4, 6, 8, 10, 12, 14, 14, 16, 18, 20, 22, 24, 26, 28, 30]"
+sectionList,"['A', 'C', 'B', 'D']"
+positionGroupBalanceCoefficientDict,"{(1, 'A'): 1.0, (2, 'C'): 1.0, (3, 'A'): 1.0, (4, 'C'): 1.0, (5, 'A'): 1.0, (6, 'C'): 1.0, (7, 'A'): 1.0, (8, 'C'): 1.0, (9, 'A'): 1.0, (10, 'C'): 1.0, (11, 'A'): 1.0, (12, 'C'): 1.0, (13, 'A'): 0.5, (13, 'B'): 0.5, (14, 'C'): 0.5, (14, 'D'): 0.5, (15, 'B'): 1.0, (16, 'D'): 1.0, (17, 'B'): 1.0, (18, 'D'): 1.0, (19, 'B'): 1.0, (20, 'D'): 1.0, (21, 'B'): 1.0, (22, 'D'): 1.0, (23, 'B'): 1.0, (24, 'D'): 1.0, (25, 'B'): 1.0, (26, 'D'): 1.0, (27, 'B'): 1.0, (28, 'D'): 1.0, (29, 'B'): 1.0, (30, 'D'): 1.0}"
+positionGroupDict,"{1: 'A', 2: 'C', 3: 'A', 4: 'C', 5: 'A', 6: 'C', 7: 'A', 8: 'C', 9: 'A', 10: 'C', 11: 'A', 12: 'C', 13: 'B', 14: 'D', 15: 'B', 16: 'D', 17: 'B', 18: 'D', 19: 'B', 20: 'D', 21: 'B', 22: 'D', 23: 'B', 24: 'D', 25: 'B', 26: 'D', 27: 'B', 28: 'D', 29: 'B', 30: 'D'}"
+positionSequenceDict,"{1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, 11: 11, 12: 12, 13: 13, 14: 14, 15: 15, 16: 16, 17: 17, 18: 18, 19: 19, 20: 20, 21: 21, 22: 22, 23: 23, 24: 24, 25: 25, 26: 26, 27: 27, 28: 28, 29: 29, 30: 30}"
+door_posn,"[30, 29]"
+Item_type,"{'plt_0': 'Full Pallet', 'plt_1': 'Full Pallet', 'plt_2': 'Full Pallet', 'plt_3': 'Full Pallet', 'plt_4': 'Full Pallet', 'plt_5': 'Full Pallet', 'plt_6': 'Full Pallet', 'plt_7': 'Full Pallet', 'plt_8': 'Full Pallet', 'plt_9': 'Full Pallet', 'plt_10': 'Full Pallet', 'plt_11': 'Full Pallet', 'plt_12': 'Full Pallet', 'plt_13': 'Full Pallet', 'plt_14': 'Full Pallet', 'plt_15': 'Full Pallet', 'plt_16': 'Full Pallet', 'plt_17': 'Full Pallet', 'plt_18': 'Full Pallet', 'plt_19': 'Full Pallet', 'plt_20': 'Full Pallet', 'plt_21': 'Full Pallet', 'plt_22': 'Full Pallet', 'plt_23': 'Full Pallet', 'plt_24': 'Full Pallet', 'plt_25': 'Full Pallet', 'plt_26': 'Layer', 'plt_27': 'Loose Boxes', 'plt_28': 'Layer', 'plt_29': 'Layer'}"
+total_demand,"{'plt_0': 1350.0, 'plt_1': 1488.0, 'plt_2': 3168.0, 'plt_3': 1248.0, 'plt_4': 2640.0, 'plt_5': 496.0, 'plt_6': 2640.0, 'plt_7': 10150.0, 'plt_8': 1380.0, 'plt_9': 1716.0, 'plt_10': 240.0, 'plt_11': 396.0, 'plt_12': 84.0, 'plt_13': 300.0, 'plt_14': 960.0, 'plt_15': 240.0, 'plt_16': 800.0, 'plt_17': 525.0, 'plt_18': 968.0, 'plt_19': 480.0, 'plt_20': 1800.0, 'plt_21': 720.0, 'plt_22': 765.0, 'plt_23': 1232.0, 'plt_24': 3500.0, 'plt_25': 8272.0, 'plt_26': 14.0, 'plt_27': 12.0, 'plt_28': 30.0}"
+containerHeight,9.1863
+containerHeightAtDoor,9.1863
+max_plt_n,30
+allowContainerMaterial,[]
+first_plt_n,12
+max_lyr_n,2
+max_wt,24000
+max_front_wt,12000
+max_rear_wt,12000
+ss_or_wooden,Pallet
+priorityIncentive,2
+sku_penalty,1
+unique_sku_n,26
+max_sku_n,0
+utilThreshold,0.6
+casesOrPalletsTruck,Cases
+side_to_side_tolerance,0.1
+front_to_back_tolerance,0
+sku_penalty_factor,0
+load_allow_ht,0
+addedPalletWeight,30
+addedPalletHeight,0.15
+fp_area_tolerance,0
+enforce_fp_tolerance,no
+fullPalletFootPrintArea,{nan: nan}
+partialPalletFootPrintArea,{nan: nan}
+crushingLimitByMaterial,{nan: nan}
+skuPriorityIncentive,{}
+fullPalletList,"['plt_0', 'plt_1', 'plt_2', 'plt_3', 'plt_4', 'plt_5', 'plt_6', 'plt_7', 'plt_8', 'plt_9', 'plt_10', 'plt_11', 'plt_12', 'plt_13', 'plt_14', 'plt_15', 'plt_16', 'plt_17', 'plt_18', 'plt_19', 'plt_20', 'plt_21', 'plt_22', 'plt_23', 'plt_24', 'plt_25']"
+partialPalletList,"['plt_26', 'plt_26', 'plt_27', 'plt_27', 'plt_28', 'plt_28', 'plt_29', 'plt_29']"
+materialList,"[582432, 556051, 556241, 576753, 577508, 572487, 556267, 578989, 582027, 578524, 578322, 552757, 571783, 575858, 576759, 576831, 577558, 572738, 556259, 557677, 576415, 579064, 574296, 578992, 578987, 585573]"
+fullPalletDemandByMaterialBatch,"{'plt_0': 15.0, 'plt_1': 4.0, 'plt_2': 72.0, 'plt_3': 8.0, 'plt_4': 60.0, 'plt_5': 2.0, 'plt_6': 60.0, 'plt_7': 58.0, 'plt_8': 46.0, 'plt_9': 44.0, 'plt_10': 4.0, 'plt_11': 2.0, 'plt_12': 1.0, 'plt_13': 1.0, 'plt_14': 10.0, 'plt_15': 4.0, 'plt_16': 10.0, 'plt_17': 3.0, 'plt_18': 22.0, 'plt_19': 2.0, 'plt_20': 30.0, 'plt_21': 3.0, 'plt_22': 17.0, 'plt_23': 14.0, 'plt_24': 20.0, 'plt_25': 94.0}"
+partialPalletDemandByMaterialBatch,"{'plt_26': 11.0, 'plt_27': 3, 'plt_28': 12.0, 'plt_29': 30.0}"
+partialFractionValueForPartialPallet,"{'plt_26': 0, 'plt_27': 0.06818181818181818, 'plt_28': 0, 'plt_29': 0}"
+palletHeightDict,"{'plt_0': 4.32, 'plt_1': 1.188, 'plt_2': 1.184, 'plt_3': 1.278, 'plt_4': 1.184, 'plt_5': 1.328, 'plt_6': 1.184, 'plt_7': 3.42, 'plt_8': 3.008, 'plt_9': 3.28, 'plt_10': 2.304, 'plt_11': 1.17, 'plt_12': 1.2, 'plt_13': 1.11, 'plt_14': 3.091, 'plt_15': 1.152, 'plt_16': 1.2, 'plt_17': 1.33, 'plt_18': 1.184, 'plt_19': 1.264, 'plt_20': 1.328, 'plt_21': 1.264, 'plt_22': 1.264, 'plt_23': 1.25, 'plt_24': 3.42, 'plt_25': 1.04, 'plt_26': 0.296, 'plt_27': 0.296, 'plt_28': 0.41, 'plt_29': 0.158}"
+palletWeightDict,"{'plt_0': 602.73, 'plt_1': 539.4, 'plt_2': 144.32, 'plt_3': 290.16, 'plt_4': 118.36, 'plt_5': 657.1999999999999, 'plt_6': 129.36, 'plt_7': 668.325, 'plt_8': 140.37, 'plt_9': 115.596, 'plt_10': 138.3, 'plt_11': 231.66, 'plt_12': 142.79999999999998, 'plt_13': 111.0, 'plt_14': 163.872, 'plt_15': 139.2, 'plt_16': 154.4, 'plt_17': 666.75, 'plt_18': 118.36, 'plt_19': 712.8000000000001, 'plt_20': 119.4, 'plt_21': 696.0, 'plt_22': 459.0, 'plt_23': 572.0, 'plt_24': 668.325, 'plt_25': 602.8, 'plt_26': 36.08, 'plt_27': 3.28, 'plt_28': 8.892, 'plt_29': 87.0}"
+palletLengthDict,"{'plt_0': 1, 'plt_1': 1, 'plt_2': 1, 'plt_3': 1, 'plt_4': 1, 'plt_5': 1, 'plt_6': 1, 'plt_7': 1, 'plt_8': 1, 'plt_9': 1, 'plt_10': 1, 'plt_11': 1, 'plt_12': 1, 'plt_13': 1, 'plt_14': 1, 'plt_15': 1, 'plt_16': 1, 'plt_17': 1, 'plt_18': 1, 'plt_19': 1, 'plt_20': 1, 'plt_21': 1, 'plt_22': 1, 'plt_23': 1, 'plt_24': 1, 'plt_25': 1, 'plt_26': 1, 'plt_27': 0.338, 'plt_28': 1, 'plt_29': 1}"
+palletWidthDict,"{'plt_0': 1.2, 'plt_1': 1.2, 'plt_2': 1.2, 'plt_3': 1.2, 'plt_4': 1.2, 'plt_5': 1.2, 'plt_6': 1.2, 'plt_7': 1.2, 'plt_8': 1.2, 'plt_9': 1.2, 'plt_10': 1.2, 'plt_11': 1.2, 'plt_12': 1.2, 'plt_13': 1.2, 'plt_14': 1.2, 'plt_15': 1.2, 'plt_16': 1.2, 'plt_17': 1.2, 'plt_18': 1.2, 'plt_19': 1.2, 'plt_20': 1.2, 'plt_21': 1.2, 'plt_22': 1.2, 'plt_23': 1.2, 'plt_24': 1.2, 'plt_25': 1.2, 'plt_26': 1.2, 'plt_27': 0.288, 'plt_28': 1.2, 'plt_29': 1.2}"
+palletMaterialDict,"{'plt_0': 582432, 'plt_1': 556051, 'plt_2': 556241, 'plt_3': 576753, 'plt_4': 577508, 'plt_5': 572487, 'plt_6': 556267, 'plt_7': 578989, 'plt_8': 582027, 'plt_9': 578524, 'plt_10': 578322, 'plt_11': 552757, 'plt_12': 571783, 'plt_13': 575858, 'plt_14': 576759, 'plt_15': 576831, 'plt_16': 577558, 'plt_17': 572738, 'plt_18': 556259, 'plt_19': 557677, 'plt_20': 576415, 'plt_21': 579064, 'plt_22': 574296, 'plt_23': 578992, 'plt_24': 578987, 'plt_25': 585573, 'plt_26': 556241, 'plt_27': 556241, 'plt_28': 578524, 'plt_29': 579064}"
+palletDescriptionDict,
+palletBrandDict,
+containerBrandDict,{}
+brand_group,{}
+palletBinLocDict,"{'plt_0': '', 'plt_1': '', 'plt_2': '', 'plt_3': '', 'plt_4': '', 'plt_5': '', 'plt_6': '', 'plt_7': '', 'plt_8': '', 'plt_9': '', 'plt_10': '', 'plt_11': '', 'plt_12': '', 'plt_13': '', 'plt_14': '', 'plt_15': '', 'plt_16': '', 'plt_17': '', 'plt_18': '', 'plt_19': '', 'plt_20': '', 'plt_21': '', 'plt_22': '', 'plt_23': '', 'plt_24': '', 'plt_25': '', 'plt_26': '', 'plt_27': '', 'plt_28': '', 'plt_29': ''}"
+palletBatchDict,"{'plt_0': '3001182751', 'plt_1': '3001182751', 'plt_2': '3001182751', 'plt_3': '3001182751', 'plt_4': '3001182751', 'plt_5': '3001182751', 'plt_6': '3001182751', 'plt_7': '3001182751', 'plt_8': '3001182751', 'plt_9': '3001182751', 'plt_10': '3001182751', 'plt_11': '3001182751', 'plt_12': '3001182751', 'plt_13': '3001182751', 'plt_14': '3001182751', 'plt_15': '3001182751', 'plt_16': '3001182751', 'plt_17': '3001182751', 'plt_18': '3001182751', 'plt_19': '3001182751', 'plt_20': '3001182751', 'plt_21': '3001182751', 'plt_22': '3001182751', 'plt_23': '3001182751', 'plt_24': '3001182751', 'plt_25': '3001182751', 'plt_26': '3001182751', 'plt_27': '3001182751', 'plt_28': '3001182751', 'plt_29': '3001182751'}"
+palletBatchDateDict,"{'plt_0': '', 'plt_1': '', 'plt_2': '', 'plt_3': '', 'plt_4': '', 'plt_5': '', 'plt_6': '', 'plt_7': '', 'plt_8': '', 'plt_9': '', 'plt_10': '', 'plt_11': '', 'plt_12': '', 'plt_13': '', 'plt_14': '', 'plt_15': '', 'plt_16': '', 'plt_17': '', 'plt_18': '', 'plt_19': '', 'plt_20': '', 'plt_21': '', 'plt_22': '', 'plt_23': '', 'plt_24': '', 'plt_25': '', 'plt_26': '', 'plt_27': '', 'plt_28': '', 'plt_29': ''}"
+max_prior_full,"{'plt_0': 0.0, 'plt_1': 0.0, 'plt_2': 0.0, 'plt_3': 0.0, 'plt_4': 0.0, 'plt_5': 0.0, 'plt_6': 0.0, 'plt_7': 0.0, 'plt_8': 0.0, 'plt_9': 0.0, 'plt_10': 0.0, 'plt_11': 0.0, 'plt_12': 0.0, 'plt_13': 0.0, 'plt_14': 0.0, 'plt_15': 0.0, 'plt_16': 0.0, 'plt_17': 0.0, 'plt_18': 0.0, 'plt_19': 0.0, 'plt_20': 0.0, 'plt_21': 0.0, 'plt_22': 0.0, 'plt_23': 0.0, 'plt_24': 0.0, 'plt_25': 0.0}"
+max_prior_prtl,"{'plt_26': 0.0, 'plt_27': 0.0, 'plt_28': 0.0, 'plt_29': 0.0}"
+priorityPalletDict,{}
+palletProfitDict,"{'plt_0': 10.0, 'plt_1': 5.0, 'plt_2': 5.0, 'plt_3': 5.0, 'plt_4': 5.0, 'plt_5': 5.0, 'plt_6': 5.0, 'plt_7': 5.0, 'plt_8': 5.0, 'plt_9': 5.0, 'plt_10': 5.0, 'plt_11': 3.3333333333333335, 'plt_12': 3.3333333333333335, 'plt_13': 3.3333333333333335, 'plt_14': 3.3333333333333335, 'plt_15': 3.3333333333333335, 'plt_16': 3.3333333333333335, 'plt_17': 3.3333333333333335, 'plt_18': 3.3333333333333335, 'plt_19': 3.3333333333333335, 'plt_20': 3.3333333333333335, 'plt_21': 3.3333333333333335, 'plt_22': 3.3333333333333335, 'plt_23': 3.3333333333333335, 'plt_24': 3.3333333333333335, 'plt_25': 3.3333333333333335, 'plt_26': 5.0, 'plt_27': 5.0, 'plt_28': 5.0, 'plt_29': 3.3333333333333335}"
+stackFactorPallet,"{'plt_0': nan, 'plt_1': nan, 'plt_2': nan, 'plt_3': nan, 'plt_4': nan, 'plt_5': nan, 'plt_6': nan, 'plt_7': nan, 'plt_8': nan, 'plt_9': nan, 'plt_10': nan, 'plt_11': nan, 'plt_12': nan, 'plt_13': nan, 'plt_14': nan, 'plt_15': nan, 'plt_16': nan, 'plt_17': nan, 'plt_18': nan, 'plt_19': nan, 'plt_20': nan, 'plt_21': nan, 'plt_22': nan, 'plt_23': nan, 'plt_24': nan, 'plt_25': nan, 'plt_26': nan, 'plt_27': nan, 'plt_28': nan, 'plt_29': nan}"
+enforce_compact_packing,yes
+palletNumCasesDict,"{'plt_0': 90, 'plt_1': 372, 'plt_2': 44, 'plt_3': 156, 'plt_4': 44, 'plt_5': 248, 'plt_6': 44, 'plt_7': 175, 'plt_8': 30, 'plt_9': 39, 'plt_10': 60, 'plt_11': 198, 'plt_12': 84, 'plt_13': 300, 'plt_14': 96, 'plt_15': 60, 'plt_16': 80, 'plt_17': 175, 'plt_18': 44, 'plt_19': 240, 'plt_20': 60, 'plt_21': 240, 'plt_22': 45, 'plt_23': 88, 'plt_24': 175, 'plt_25': 88, 'plt_26': 11.0, 'plt_27': 1, 'plt_28': 3.0, 'plt_29': 30.0}"
+palletPriorityDict,"{'plt_0': 1, 'plt_1': 2, 'plt_2': 2, 'plt_3': 2, 'plt_4': 2, 'plt_5': 2, 'plt_6': 2, 'plt_7': 2, 'plt_8': 2, 'plt_9': 2, 'plt_10': 2, 'plt_11': 3, 'plt_12': 3, 'plt_13': 3, 'plt_14': 3, 'plt_15': 3, 'plt_16': 3, 'plt_17': 3, 'plt_18': 3, 'plt_19': 3, 'plt_20': 3, 'plt_21': 3, 'plt_22': 3, 'plt_23': 3, 'plt_24': 3, 'plt_25': 3, 'plt_26': 2, 'plt_27': 2, 'plt_28': 2, 'plt_29': 3}"
+palletList,"['plt_0', 'plt_1', 'plt_2', 'plt_3', 'plt_4', 'plt_5', 'plt_6', 'plt_7', 'plt_8', 'plt_9', 'plt_10', 'plt_11', 'plt_12', 'plt_13', 'plt_14', 'plt_15', 'plt_16', 'plt_17', 'plt_18', 'plt_19', 'plt_20', 'plt_21', 'plt_22', 'plt_23', 'plt_24', 'plt_25', 'plt_26', 'plt_26', 'plt_27', 'plt_27', 'plt_28', 'plt_28', 'plt_29', 'plt_29']"
+palletDemandDict,"{'plt_0': 15.0, 'plt_1': 4.0, 'plt_2': 72.0, 'plt_3': 8.0, 'plt_4': 60.0, 'plt_5': 2.0, 'plt_6': 60.0, 'plt_7': 58.0, 'plt_8': 46.0, 'plt_9': 44.0, 'plt_10': 4.0, 'plt_11': 2.0, 'plt_12': 1.0, 'plt_13': 1.0, 'plt_14': 10.0, 'plt_15': 4.0, 'plt_16': 10.0, 'plt_17': 3.0, 'plt_18': 22.0, 'plt_19': 2.0, 'plt_20': 30.0, 'plt_21': 3.0, 'plt_22': 17.0, 'plt_23': 14.0, 'plt_24': 20.0, 'plt_25': 94.0, 'plt_26': 1, 'plt_27': 3, 'plt_28': 4, 'plt_29': 1}"
+time_limit,420
+palletPriority_numAvailableContainers,"{'plt_0': 1, 'plt_1': 1, 'plt_2': 1, 'plt_3': 1, 'plt_4': 1, 'plt_5': 1, 'plt_6': 1, 'plt_7': 1, 'plt_8': 1, 'plt_9': 1, 'plt_10': 1, 'plt_11': 1, 'plt_12': 1, 'plt_13': 1, 'plt_14': 1, 'plt_15': 1, 'plt_16': 1, 'plt_17': 1, 'plt_18': 1, 'plt_19': 1, 'plt_20': 1, 'plt_21': 1, 'plt_22': 1, 'plt_23': 1, 'plt_24': 1, 'plt_25': 1, 'plt_26': 1, 'plt_27': 1, 'plt_28': 1}"
+palletPriorityValue_numAvailableContainers,"{'plt_0': 1, 'plt_1': 1, 'plt_2': 1, 'plt_3': 1, 'plt_4': 1, 'plt_5': 1, 'plt_6': 1, 'plt_7': 1, 'plt_8': 1, 'plt_9': 1, 'plt_10': 1, 'plt_11': 1, 'plt_12': 1, 'plt_13': 1, 'plt_14': 1, 'plt_15': 1, 'plt_16': 1, 'plt_17': 1, 'plt_18': 1, 'plt_19': 1, 'plt_20': 1, 'plt_21': 1, 'plt_22': 1, 'plt_23': 1, 'plt_24': 1, 'plt_25': 1, 'plt_26': 1, 'plt_27': 1, 'plt_28': 1}"

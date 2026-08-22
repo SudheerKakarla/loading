@@ -1,0 +1,7 @@
+Market Code,Brand Group,Date Time,Container,Full Pallet,Partial Pallet,Utilization (Pallets),Utilization (Volume),Utilization (Weight),Cargo Weight: Front,Cargo Weight: Rear,Front Limit,Rear Limit
+A-B,,,1,40,,66.7,54.2,95.5,18573,21532,19920,22080
+A-B,,,2,36,,60.0,50.6,98.3,19197,22075,19920,22080
+A-B,,,3,34,,56.7,48.0,95.6,19028,21107,19920,22080
+A-B,,,4,33,2,58.3,48.8,97.3,19207,21669,19920,22080
+A-B,,,5,28,,46.7,39.9,89.7,17421,20233,19920,22080
+A-B,,,6,28,,46.7,40.1,80.4,15545,18225,19920,22080

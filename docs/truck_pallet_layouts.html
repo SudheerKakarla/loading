@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LoadMax — Truck floor maps (20 / 21 / 22 pallet)</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2330;
+      --ink: #e8eef5;
+      --muted: #9aa8b8;
+      --line: #2c3a4d;
+      --blue: #1e4f8a;
+      --blue-2: #2d6cb5;
+      --red: #b33a3a;
+      --red-2: #c45c3a;
+      --gold: #d4a017;
+      --door: #3d4f63;
+      --ok: #3d9b6e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    header {
+      padding: 2.2rem 1.5rem 1.4rem;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #1a2838 0%, var(--bg) 100%);
+    }
+    header h1 { margin: 0 0 0.35rem; font-size: 1.7rem; font-weight: 650; }
+    header p { margin: 0; color: var(--muted); max-width: 52rem; }
+    main { max-width: 72rem; margin: 0 auto; padding: 1.5rem; }
+    h2 { font-size: 1.2rem; margin: 2rem 0 0.6rem; }
+    h3 { font-size: 1.05rem; margin: 0 0 0.4rem; }
+    p { color: #c5d0dc; }
+    .lede { color: var(--muted); margin-top: 0; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.8rem;
+      margin: 1rem 0 1.5rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.9rem 1rem;
+    }
+    .card strong { display: block; color: var(--gold); font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+      background: var(--panel);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    th, td { text-align: left; padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--line); }
+    th { color: var(--gold); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    .layout {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1.1rem 1.1rem 1.3rem;
+      margin: 1rem 0 1.6rem;
+    }
+    .layout-head {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 0.6rem;
+      margin-bottom: 0.8rem;
+    }
+    .badge {
+      display: inline-block;
+      background: #243044;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.15rem 0.65rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .floor-wrap {
+      overflow-x: auto;
+      padding-bottom: 0.4rem;
+    }
+    .truck {
+      display: grid;
+      grid-template-columns: 52px 1fr 70px;
+      gap: 0.45rem;
+      align-items: stretch;
+      min-width: 720px;
+    }
+    .nose, .door-col {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      background: #121a24;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .door-col { background: var(--door); color: #dbe6f2; }
+    .lanes { display: flex; flex-direction: column; gap: 6px; }
+    .lane {
+      display: flex;
+      gap: 4px;
+      align-items: stretch;
+    }
+    .pad {
+      flex: 1 1 0;
+      min-height: 58px;
+      border-radius: 5px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 0.78rem;
+      font-weight: 650;
+      border: 1px solid rgba(255,255,255,0.12);
+      position: relative;
+    }
+    .pad small {
+      font-weight: 500;
+      font-size: 0.62rem;
+      opacity: 0.88;
+    }
+    .pad[data-mm="1000"] { flex: 1 1 0; }
+    .pad[data-mm="1200"] { flex: 1.2 1 0; }
+    .A { background: var(--blue); }
+    .B { background: var(--blue-2); }
+    .C { background: var(--red); }
+    .D { background: var(--red-2); }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.7rem;
+      margin-top: 0.75rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+    .note {
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin: 0.55rem 0 0;
+    }
+    code { background: #243044; padding: 0.05rem 0.35rem; border-radius: 4px; font-size: 0.85em; }
+    footer { color: var(--muted); font-size: 0.8rem; padding: 2rem 1.5rem; text-align: center; }
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 0.5rem;
+      align-items: center;
+      margin: 1rem 0;
+    }
+    .flow .card { margin: 0; text-align: center; }
+    .arrow { color: var(--gold); font-size: 1.4rem; }
+    @media (max-width: 800px) {
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); text-align: center; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Truck floor maps — three ways to load a 40′ trailer</h1>
+    <p>
+      From Market Configuration LKDC.xlsx (PalletLayout). Each drawing is a different
+      <em>floor grid</em> for the same trailer, not three stacked layers.
+      LoadMax picks one map, then the optimizer only assigns cargo to those numbered pads.
+    </p>
+  </header>
+  <main>
+    <h2>What the spreadsheet is telling you</h2>
+    <p class="lede">
+      PalletLayout lists several floor sizes (10, 11, 14, 20, 21, 22, 28, 30).
+      The three pictures on the Config sheet are the 40′ options that mix
+      <strong>1.0 m (40″)</strong> and <strong>1.2 m (48″)</strong> faces of a standard pallet.
+    </p>
+    <div class="cards">
+      <div class="card"><strong>Pallets</strong>Floor spots on one layer (<code>max_plt_n</code>)</div>
+      <div class="card"><strong>Groups A B C D</strong>Front-left, rear-left, front-right, rear-right</div>
+      <div class="card"><strong>Position</strong>Slot id used as <code>y[truck, layer, position]</code></div>
+      <div class="card"><strong>Ass-Seq / Seq</strong>Load order for compact packing</div>
+    </div>
+
+    <div class="flow">
+      <div class="card"><strong>1. Pick a layout</strong>20, 21, or 22 pads for a 40′ trailer</div>
+      <div class="arrow">→</div>
+      <div class="card"><strong>2. Build Config</strong>positionList, A/B/C/D, door, first_plt_n</div>
+      <div class="arrow">→</div>
+      <div class="card"><strong>3. HiGHS assign</strong>each pallet to a pad and a layer (1–2 on A-B)</div>
+    </div>
+
+    <p>
+      The optimizer does <strong>not</strong> rotate pallets or switch 20 ↔ 22 by itself.
+      Orientation is already baked into which layout you loaded.
+    </p>
+
+    <h2>The three 40′ floor maps</h2>
+    <p class="lede">
+      Door is on the right. Top lane is the left wall (groups A then B).
+      Bottom lane is the right wall (groups C then D). Same 12 m of trailer length in every drawing.
+    </p>
+    <div class="legend">
+      <span><i class="sw A"></i>A front-left</span>
+      <span><i class="sw B"></i>B rear-left</span>
+      <span><i class="sw C"></i>C front-right</span>
+      <span><i class="sw D"></i>D rear-right</span>
+      <span>Pad label: position number · mm along trailer length</span>
+    </div>
+
+    <!-- 20 -->
+    <section class="layout">
+      <div class="layout-head">
+        <h3>1. 20-pallet · 40′ · two rows of 10</h3>
+        <span class="badge">all same way · 1.2 m along length</span>
+      </div>
+      <p class="note">
+        Every pallet presents 1.2 m (48″) along the trailer. 10 × 1.2 m = 12 m.
+        Two lanes × 10 = <strong>20 floor spots</strong>. Simplest load; fewest pads.
+      </p>
+      <div class="floor-wrap">
+        <div class="truck">
+          <div class="nose">Nose · front axle</div>
+          <div class="lanes" id="map20"></div>
+          <div class="door-col">Door · rear axle</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 22 -->
+    <section class="layout">
+      <div class="layout-head">
+        <h3>2. 22-pallet · 40′ · one row of 12, one row of 10</h3>
+        <span class="badge">left lane turned · +2 spots vs 20</span>
+      </div>
+      <p class="note">
+        Left lane is rotated: 1.0 m (40″) along the trailer so <strong>12</strong> fit in 12 m (red in the spreadsheet).
+        Right lane stays 1.2 m × <strong>10</strong> (blue). Across: 1.2 m + 1.0 m ≈ trailer width.
+        That is the pinwheel that buys two extra pads.
+      </p>
+      <div class="floor-wrap">
+        <div class="truck">
+          <div class="nose">Nose · front axle</div>
+          <div class="lanes" id="map22"></div>
+          <div class="door-col">Door · rear axle</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 21 -->
+    <section class="layout">
+      <div class="layout-head">
+        <h3>3. 21-pallet · 40′ · one row of 11, one row of 10</h3>
+        <span class="badge">mixed 1.0 m / 1.2 m · between 20 and 22</span>
+      </div>
+      <p class="note">
+        Same idea as 22, but one fewer turned pallet: 11 + 10 = <strong>21 floor spots</strong>.
+        The spreadsheet also lists a shorter <strong>11-pallet / 20′</strong> cut (one row of 6, one of 5) using the same mixed faces.
+      </p>
+      <div class="floor-wrap">
+        <div class="truck">
+          <div class="nose">Nose · front axle</div>
+          <div class="lanes" id="map21"></div>
+          <div class="door-col">Door · rear axle</div>
+        </div>
+      </div>
+    </section>
+
+    <h2>How groups become optimizer constraints</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Group</th>
+          <th>On the trailer</th>
+          <th>LoadMax lists</th>
+          <th>Used for</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><i class="sw A"></i> A</td>
+          <td>Front, left lane</td>
+          <td><code>frontPositionList</code> + <code>leftPositionList</code></td>
+          <td>Front axle (A+C), left/right balance</td>
+        </tr>
+        <tr>
+          <td><i class="sw C"></i> C</td>
+          <td>Front, right lane</td>
+          <td>front + right</td>
+          <td>Front axle 19,920 lb</td>
+        </tr>
+        <tr>
+          <td><i class="sw B"></i> B</td>
+          <td>Rear, left lane (toward door)</td>
+          <td>rear + left</td>
+          <td>Rear axle (B+D)</td>
+        </tr>
+        <tr>
+          <td><i class="sw D"></i> D</td>
+          <td>Rear, right lane (toward door)</td>
+          <td>rear + right</td>
+          <td>Rear axle 22,080 lb</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>What HiGHS does with a chosen map</h2>
+    <p>
+      One binary per <code>(container, layer, position)</code>. At most one pallet on that pad.
+      Layer 2 stacks on the <em>same</em> position number. Height is summed in that column
+      (A-B: ≤ 9 ft, door pads ≤ 3.5 ft). Compact packing fills from <code>first_plt_n</code>
+      toward both ends using Ass-Seq, not 1, 2, 3 order.
+    </p>
+    <p>
+      A-B used a denser <strong>30-pallet / 40′</strong> map (two rows of 15), same idea as these
+      three drawings. Switching a market from 20 to 22 is a Config change, not a solver decision.
+    </p>
+  </main>
+  <footer>LoadMax · floor maps from Market Configuration LKDC.xlsx PalletLayout · 40″ × 48″ (1000 × 1200 mm)</footer>
+  <script>
+    function pad(n, group, mm) {
+      const el = document.createElement("div");
+      el.className = "pad " + group;
+      el.dataset.mm = String(mm);
+      el.title = "Position " + n + " · group " + group + " · " + mm + " mm along trailer";
+      el.innerHTML = n + "<small>" + (mm / 1000).toFixed(1) + " m</small>";
+      return el;
+    }
+    function lane(items) {
+      const row = document.createElement("div");
+      row.className = "lane";
+      items.forEach(([n, g, mm]) => row.appendChild(pad(n, g, mm)));
+      return row;
+    }
+    function fill(id, lanes) {
+      const host = document.getElementById(id);
+      lanes.forEach((items) => host.appendChild(lane(items)));
+    }
+
+    // 20: left 1-10 (A 1-5, B 6-10), right 11-20 (C 11-15, D 16-20), all 1200 mm
+    fill("map20", [
+      [
+        [1,"A",1200],[2,"A",1200],[3,"A",1200],[4,"A",1200],[5,"A",1200],
+        [6,"B",1200],[7,"B",1200],[8,"B",1200],[9,"B",1200],[10,"B",1200]
+      ],
+      [
+        [11,"C",1200],[12,"C",1200],[13,"C",1200],[14,"C",1200],[15,"C",1200],
+        [16,"D",1200],[17,"D",1200],[18,"D",1200],[19,"D",1200],[20,"D",1200]
+      ]
+    ]);
+
+    // 22: left 1-12 at 1000 mm (A 1-6, B 7-12), right 13-22 at 1200 mm (C 13-17, D 18-22)
+    fill("map22", [
+      [
+        [1,"A",1000],[2,"A",1000],[3,"A",1000],[4,"A",1000],[5,"A",1000],[6,"A",1000],
+        [7,"B",1000],[8,"B",1000],[9,"B",1000],[10,"B",1000],[11,"B",1000],[12,"B",1000]
+      ],
+      [
+        [13,"C",1200],[14,"C",1200],[15,"C",1200],[16,"C",1200],[17,"C",1200],
+        [18,"D",1200],[19,"D",1200],[20,"D",1200],[21,"D",1200],[22,"D",1200]
+      ]
+    ]);
+
+    // 21: left 1-11 mixed (A 1-6, B 6-11), right 12-21 (C 12-16, D 17-21)
+    fill("map21", [
+      [
+        [1,"A",1000],[2,"A",1000],[3,"A",1000],[4,"A",1000],[5,"A",1000],[6,"A",1000],
+        [7,"B",1000],[8,"B",1000],[9,"B",1000],[10,"B",1200],[11,"B",1200]
+      ],
+      [
+        [12,"C",1200],[13,"C",1200],[14,"C",1200],[15,"C",1200],[16,"C",1200],
+        [17,"D",1200],[18,"D",1200],[19,"D",1200],[20,"D",1000],[21,"D",1000]
+      ]
+    ]);
+  </script>
+</body>
+</html>

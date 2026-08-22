@@ -1,0 +1,5 @@
+gurobipy
+pandas 
+numpy 
+prettytable
+scipy>=1.9
