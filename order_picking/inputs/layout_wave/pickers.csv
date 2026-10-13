@@ -1,0 +1,13 @@
+picker_id,equipment_type,max_weight,max_volume,shift_duration
+P01,pallet_jack,2500.0,2.0,480.0
+P02,pallet_jack,2500.0,2.0,480.0
+P03,pallet_jack,2500.0,2.0,480.0
+P04,pallet_jack,2500.0,2.0,480.0
+P05,pallet_jack,2500.0,2.0,480.0
+P06,pallet_jack,2500.0,2.0,480.0
+P07,pallet_jack,2500.0,2.0,480.0
+P08,pallet_jack,2500.0,2.0,480.0
+P09,forklift,5000.0,4.0,480.0
+P10,forklift,5000.0,4.0,480.0
+P11,forklift,5000.0,4.0,480.0
+P12,forklift,5000.0,4.0,480.0

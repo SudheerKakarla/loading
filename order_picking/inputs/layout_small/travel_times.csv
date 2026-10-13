@@ -1,0 +1,13 @@
+from_location,to_location,travel_time
+L1,L2,13.0
+L1,PACK_A,3.0
+L1,PACK_B,7.0
+L2,L1,13.0
+L2,PACK_A,10.0
+L2,PACK_B,6.0
+PACK_A,L1,3.0
+PACK_A,L2,10.0
+PACK_A,PACK_B,4.0
+PACK_B,L1,7.0
+PACK_B,L2,6.0
+PACK_B,PACK_A,4.0

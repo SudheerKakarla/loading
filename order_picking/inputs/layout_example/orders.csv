@@ -1,0 +1,7 @@
+order_id,total_weight,total_volume,required_equipment,account_tier,cutoff_time,wait_time,must_ship
+O1,400,0.3,,standard,,1.5,
+O2,750,0.5,,key,,3,
+O3,200,0.1,,standard,,0.5,
+O4,3200,3.2,forklift,standard,,2,
+O5,2200,1.6,,key,,,true
+O6,600,0.4,,standard,,6,

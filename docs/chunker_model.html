@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Truck load chunker — set-partitioning model</title>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["$", "$"], ["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"]],
+        tags: "ams"
+      },
+      options: { skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"] }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2330;
+      --ink: #e8eef5;
+      --muted: #9aa8b8;
+      --line: #2c3a4d;
+      --gold: #d4a017;
+      --ok: #3d9b6e;
+      --chip: #243044;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    a { color: #8ec5ff; }
+    header {
+      padding: 2.2rem 1.5rem 1.4rem;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #1a2838 0%, var(--bg) 100%);
+    }
+    header h1 { margin: 0 0 0.35rem; font-size: 1.7rem; font-weight: 650; }
+    header p { margin: 0.35rem 0 0; color: var(--muted); max-width: 54rem; }
+    .layout-page {
+      display: grid;
+      grid-template-columns: 230px 1fr;
+      max-width: 88rem;
+      margin: 0 auto;
+    }
+    nav {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      padding: 1.2rem 1rem 2rem 1.4rem;
+      border-right: 1px solid var(--line);
+      height: 100vh;
+      overflow: auto;
+      font-size: 0.86rem;
+    }
+    nav a {
+      display: block;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 0.22rem 0;
+    }
+    nav a:hover { color: var(--gold); }
+    nav .g {
+      margin-top: 0.85rem;
+      color: var(--gold);
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    main { padding: 1.4rem 1.6rem 4rem; min-width: 0; }
+    h2 { font-size: 1.28rem; margin: 2.1rem 0 0.55rem; }
+    h3 { font-size: 1.05rem; margin: 1.4rem 0 0.4rem; }
+    p { color: #c5d0dc; }
+    .lede { color: var(--muted); margin-top: 0; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.7rem;
+      margin: 0.8rem 0 1.1rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.85rem 0.95rem;
+    }
+    .card strong {
+      display: block;
+      color: var(--gold);
+      font-size: 0.74rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      background: var(--panel);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 0.6rem 0 1.1rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.48rem 0.7rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      color: var(--gold);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    code {
+      background: var(--chip);
+      padding: 0.05rem 0.32rem;
+      border-radius: 4px;
+      font-size: 0.85em;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+    .note { font-size: 0.9rem; color: var(--muted); }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1rem 1.1rem 1.15rem;
+      margin: 0.8rem 0 1.3rem;
+    }
+    .formula {
+      background: #121a24;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.7rem 0.9rem;
+      overflow-x: auto;
+      margin: 0.5rem 0 0.9rem;
+    }
+    pre {
+      background: #121a24;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.8rem 1rem;
+      overflow-x: auto;
+      color: var(--ink);
+      font-size: 0.86rem;
+      line-height: 1.45;
+    }
+    pre code { background: transparent; padding: 0; }
+    .ex {
+      border-left: 3px solid var(--gold);
+      padding: 0.15rem 0 0.15rem 0.8rem;
+      margin: 0.5rem 0 0.9rem;
+    }
+    ol.eq { color: #c5d0dc; }
+    footer { color: var(--muted); font-size: 0.8rem; padding: 1.5rem; text-align: center; }
+    @media (max-width: 900px) {
+      .layout-page { grid-template-columns: 1fr; }
+      nav { display: none; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Truck load chunker model</h1>
+  <p>
+    One wave of customer orders is packed onto trucks, each truck is split into picker jobs, and the picker
+    then routes and assigns those jobs. This page is that whole path, with the set-partitioning chunker
+    in <code>order_picking/chunker/chunk_model.py</code> as the middle step. The picker math is
+    <a href="order_picking_model.html">order_picking_model.html</a>.
+  </p>
+  <p class="note">Display math uses MathJax. Open the file in a browser with network access so the formulas render.</p>
+</header>
+<div class="layout-page">
+<nav>
+  <div class="g">Overview</div>
+  <a href="#path">End to end</a>
+  <a href="#what">What the chunker decides</a>
+  <a href="#io">Inputs and outputs</a>
+  <a href="#crew">The crew</a>
+  <a href="#rules">The rules</a>
+  <div class="g">The math</div>
+  <a href="#idea">The idea in one picture</a>
+  <a href="#milp">The model</a>
+  <a href="#candidates">Building candidate jobs</a>
+  <a href="#fallback">Time limit and fallback</a>
+  <div class="g">Results</div>
+  <a href="#results">16-truck sample</a>
+  <a href="#runtime">Where the time goes</a>
+  <a href="#open">Open decisions</a>
+  <a href="#research">Research basis</a>
+  <a href="#files">Where the equations live</a>
+</nav>
+<main>
+
+<h2 id="path">End to end</h2>
+<p class="lede">Three programs, in order. Each one writes files the next one reads. Pallet loading is a separate model, <a href="loadmax_model.html">loadmax_model.html</a>, and these files are not its input.</p>
+<table>
+  <tr><th>Step</th><th>Program</th><th>What it does</th></tr>
+  <tr>
+    <td>1. Truck loads</td>
+    <td><code>chunker/build_truck_loads.py</code></td>
+    <td>Keeps each source order on one truck. Fills trucks to about 8–12 tonnes. Odd trucks use <code>PACK_A</code> and even trucks use <code>PACK_B</code>. Writes <code>inputs/chunk_warehouse/truck_loads.csv</code>.</td>
+  </tr>
+  <tr>
+    <td>2. Chunk</td>
+    <td><code>chunker/chunk_model.py</code></td>
+    <td>Splits one truck at one dock into jobs a single picker can carry. HiGHS chooses which jobs to use. The picker is chosen in step 3.</td>
+  </tr>
+  <tr>
+    <td>2, alternative</td>
+    <td><code>chunker/chunk_loads.py</code></td>
+    <td>Run this instead of the model for a fast Clarke–Wright split. A fitting order can land on more than one job. With <code>--pickers</code>, the cap is the heaviest machine.</td>
+  </tr>
+  <tr>
+    <td>3. Pick</td>
+    <td><code>source/order_picking_optimizer.py</code></td>
+    <td>One dock at a time. Phase 1 builds each job's walk from that dock. Phase 2 gives each released job to one picker, and the job stays whole.</td>
+  </tr>
+</table>
+<p>
+  The sample wave is 16 trucks, 300 source orders, and 2,295 lines. Each order sits on one truck, one dock, and one stop, and has at most 12 lines.
+  Run the commands from <code>order_picking/</code>. Use one of the two chunkers, then run the picker once for each dock.
+</p>
+<pre><code>python chunker/build_truck_loads.py
+python chunker/chunk_model.py --loads inputs/chunk_warehouse/truck_loads.csv --travel inputs/layout_warehouse/travel_times.csv --pickers inputs/layout_warehouse/pickers.csv --out outputs/chunk_model
+python chunker/chunk_loads.py --loads inputs/chunk_warehouse/truck_loads.csv --travel inputs/layout_warehouse/travel_times.csv --pickers inputs/layout_warehouse/pickers.csv --out outputs/chunk_loads
+python source/order_picking_optimizer.py --orders outputs/chunk_model/by_depot/PACK_A/orders.csv --items outputs/chunk_model/by_depot/PACK_A/order_items.csv --pickers inputs/layout_warehouse/pickers.csv --travel inputs/layout_warehouse/travel_times.csv --depot PACK_A</code></pre>
+<p>
+  The model prices each candidate with a Held–Karp tour and stores that length in <code>walk_minutes</code>.
+  The 5 minutes per job and the pick time are in the objective and in <code>solve.csv</code>, and they stay out of <code>walk_minutes</code>.
+  The line order written for a chosen job is nearest neighbor from the dock, so that sequence can differ from the tour that set <code>walk_minutes</code>.
+  The savings command stores its nearest-neighbor tour in <code>walk_minutes</code>.
+</p>
+<p>
+  Phase 1 computes a new walk from the dock and the job's slots. The default tour is nearest neighbor plus directed 2-opt. <code>--phase1 highs</code> asks for an exact tour.
+  Phase 2 then assigns each released job to one eligible picker. A job that the shift cannot hold, or that loses to a higher-weight set of jobs, stays unreleased.
+  The default assignment maximises release weight. <code>--lateness-weight</code> also charges minutes past <code>cutoff_time</code>, read as minutes from the start of the shift, with each picker working in earliest-deadline order. <code>--prefer-jack</code> charges a jack-eligible job given to a forklift. Both default to 0.
+  The chunker's 5 minutes are a batching charge, and the picker leaves them out of the walk.
+  Repeat the picker command with <code>--depot PACK_B</code> and that dock's folder. The two docks keep separate crews.
+</p>
+
+<h2 id="what">What the chunker decides</h2>
+<p class="lede">A truck carries many order lines. A picker can only carry so much on one trip. The chunker decides which lines go together in each trip.</p>
+<div class="cards">
+  <div class="card"><strong>Goal</strong>Split each truck's lines into one-trip picker jobs.</div>
+  <div class="card"><strong>Cost of a job</strong>Walking minutes + 5 min per job + each line's pick time (0.5 min when the file leaves it blank).</div>
+  <div class="card"><strong>Score</strong>Total minutes over all jobs of the truck. Lower is better.</div>
+  <div class="card"><strong>Solver</strong>HiGHS, through <code>scipy.optimize.milp</code>. One model per truck and dock.</div>
+</div>
+<p>
+  The pick time is the same for every split (every line is picked once), so it never changes which split wins.
+  It stays in the cost so that a job's minutes read like a real picker duration.
+  The Clarke–Wright chunker in <code>chunk_loads.py</code> stays as the quick standalone option.
+</p>
+
+<h2 id="io">Inputs and outputs</h2>
+<table>
+  <tr><th>In</th><th>What it holds</th></tr>
+  <tr><td><code>truck_loads.csv</code></td><td>One row per line: <code>truck_id</code>, <code>depot_id</code>, <code>item_id</code>, <code>location_id</code>, <code>weight</code>. Optional <code>volume</code>, <code>destination_id</code>, <code>source_order_id</code>, <code>pick_time</code>, <code>must_ship</code>, <code>departure_time</code>, and others.</td></tr>
+  <tr><td><code>travel_times.csv</code></td><td>Walking minutes between slots and docks. The same table the picker uses.</td></tr>
+  <tr><td><code>pickers.csv</code></td><td>Each picker's equipment, weight limit, volume limit, and shift length. The chunker uses the caps. The picker also uses the shift.</td></tr>
+</table>
+<table>
+  <tr><th>Out</th><th>What it holds</th></tr>
+  <tr><td><code>orders.csv</code></td><td>One row per job, in the picker's order shape: weight, volume, <code>required_equipment</code>, <code>priority_weight</code>, <code>cutoff_time</code>, truck, and dock.</td></tr>
+  <tr><td><code>order_items.csv</code></td><td>One row per line. The model writes those lines in nearest-neighbor order from the dock.</td></tr>
+  <tr><td><code>jobs.csv</code></td><td>Per job: cutoff, priority, line count, <code>walk_minutes</code>, and <code>exceeds_capacity</code>. For the model, <code>walk_minutes</code> is the Held–Karp tour and <code>exceeds_capacity</code> is false, because a job that fits nobody is rejected instead. The savings command stores the nearest-neighbor tour and can mark a single over-cap line true.</td></tr>
+  <tr><td><code>by_depot/&lt;depot_id&gt;/</code></td><td>The same files for one dock, ready for the picker.</td></tr>
+  <tr><td><code>rejected.csv</code></td><td>Lines or orders no single picker can carry, with the reason.</td></tr>
+  <tr><td><code>solve.csv</code></td><td><code>truck_id</code>, <code>depot_id</code>, <code>minutes</code>, <code>mip_gap</code>, <code>fallback</code>.</td></tr>
+</table>
+<p>The commands are in <a href="#path">End to end</a>. <code>solve.csv</code> <code>minutes</code> is the full objective: the Held–Karp walks, plus 5 minutes per job, plus the pick times. The sum of <code>walk_minutes</code> is the walking part alone.</p>
+
+<h2 id="crew">The crew</h2>
+<table>
+  <tr><th>Machine</th><th>Count</th><th>Weight limit</th><th>Volume limit</th></tr>
+  <tr><td>Pallet jack</td><td>8</td><td>2500 kg</td><td>2.0 m³</td></tr>
+  <tr><td>Forklift</td><td>4</td><td>5000 kg</td><td>4.0 m³</td></tr>
+</table>
+<p>
+  A job holds at most 15 lines (<code>--max-job-lines</code>). Weight and volume are judged together on one picker.
+  On this crew the forklift holds both the highest limits, so a job fits when it is within 5000 kg and 4.0 m³.
+  A job only a forklift can carry is marked <code>required_equipment = forklift</code>. A job a pallet jack can carry leaves that field blank, so either machine may take it.
+  Each picker has a 480 minute shift. The chunker leaves the shift to the picker.
+</p>
+
+<h2 id="rules">The rules</h2>
+<div class="cards">
+  <div class="card"><strong>Whole orders</strong>A customer order that fits one picker stays in one job. Several orders can share a job.</div>
+  <div class="card"><strong>Stops can mix</strong>Orders for different stops at the same dock can share a job. <code>--destination-grouping</code> keeps one stop per job.</div>
+  <div class="card"><strong>Too big</strong>An order no single picker can carry goes to <code>rejected.csv</code>. It is not split to force a job.</div>
+  <div class="card"><strong>Must-ship</strong>Must-ship lines carry a flat priority weight of 100000 on their job. That weight is not in the minutes objective.</div>
+</div>
+<p>
+  A must-ship line rides only in a priority-eligible job. By default that is any feasible job containing it;
+  <code>--priority-max-lines</code> is an optional tighter cap.
+  An ordinary job gets its base weight times the line count, divided by 10.
+  This sample has no base-weight column and a blank account tier, and every truck leaves inside the 8-hour wave, so that base is 4 and the weight is 0.4 times the line count.
+  The picker keeps the written weight as the release coefficient. The chunker minutes leave it out.
+  Cutoff is the truck departure minus 30 minutes, in minutes from the wave start. Because the job already has a priority weight, the picker keeps that weight.
+</p>
+
+<h2 id="idea">The idea in one picture</h2>
+<p>List many possible jobs, price each one, then pick the cheapest set that covers every line exactly once.</p>
+<div class="panel">
+<svg viewBox="0 0 860 250" width="100%" role="img" aria-label="Set partitioning diagram" font-family="Segoe UI, sans-serif" font-size="13">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#9aa8b8"/></marker></defs>
+  <g fill="#e8eef5">
+    <text x="20" y="22" fill="#d4a017">Lines of one truck</text>
+    <g fill="#243044" stroke="#2c3a4d">
+      <rect x="20" y="40" width="120" height="30" rx="6"/><rect x="20" y="80" width="120" height="30" rx="6"/>
+      <rect x="20" y="120" width="120" height="30" rx="6"/><rect x="20" y="160" width="120" height="30" rx="6"/>
+      <rect x="20" y="200" width="120" height="30" rx="6"/></g>
+    <text x="35" y="60">Order A (3 lines)</text><text x="35" y="100">Order B (2 lines)</text>
+    <text x="35" y="140">Order C (4 lines)</text><text x="35" y="180">Order D (1 line)</text><text x="35" y="220">Order E (5 lines)</text>
+    <text x="250" y="22" fill="#d4a017">Candidate jobs, each priced</text>
+    <g fill="#1a2330" stroke="#2c3a4d">
+      <rect x="250" y="40" width="250" height="30" rx="6"/><rect x="250" y="80" width="250" height="30" rx="6" stroke="#3d9b6e" stroke-width="2"/>
+      <rect x="250" y="120" width="250" height="30" rx="6"/><rect x="250" y="160" width="250" height="30" rx="6" stroke="#3d9b6e" stroke-width="2"/>
+      <rect x="250" y="200" width="250" height="30" rx="6" stroke="#3d9b6e" stroke-width="2"/></g>
+    <text x="262" y="60">{A} · 14.2 min</text><text x="262" y="100">{A, B} · 17.9 min</text>
+    <text x="262" y="140">{B, C} · 21.0 min</text><text x="262" y="180">{C, D} · 19.4 min</text><text x="262" y="220">{E} · 16.1 min</text>
+    <text x="600" y="22" fill="#d4a017">HiGHS picks</text>
+    <rect x="600" y="80" width="240" height="110" rx="10" fill="#1a2330" stroke="#3d9b6e"/>
+    <text x="615" y="105">{A,B} + {C,D} + {E}</text>
+    <text x="615" y="130">every line once</text>
+    <text x="615" y="155">total 53.4 min</text>
+    <text x="615" y="178" fill="#9aa8b8" font-size="11">(illustrative numbers)</text>
+  </g>
+  <g stroke="#9aa8b8" fill="none" marker-end="url(#ar)"><path d="M145,135 L245,135"/><path d="M505,135 L595,135"/></g>
+</svg>
+</div>
+<p class="note">Price of a job = shortest closed walk from the dock through its distinct pick slots and back (Held–Karp), plus 5 minutes, plus each line's pick time.</p>
+
+<h2 id="milp">The model</h2>
+<p>This is a <em>set partitioning</em> model: choose jobs so every line lands in exactly one chosen job.</p>
+<table>
+  <tr><th>Symbol</th><th>Meaning</th></tr>
+  <tr><td>\(K_t\)</td><td>Candidate jobs for truck \(t\) at one dock</td></tr>
+  <tr><td>\(z_k\)</td><td>1 if job \(k\) is used, else 0</td></tr>
+  <tr><td>\(a_{lk}\)</td><td>1 if line \(l\) is in job \(k\)</td></tr>
+  <tr><td>\(U_k\)</td><td>Distinct pick slots of job \(k\) (a shared bin is visited once)</td></tr>
+  <tr><td>\(c_k\)</td><td>Minutes of job \(k\)</td></tr>
+</table>
+<div class="formula">
+\[ c_k = \mathrm{HK}(\text{dock}, U_k) + \theta + \sum_{l \in k} \pi_l \]
+\[
+\begin{aligned}
+\min \quad & \sum_{k \in K_t} c_k z_k \\
+\text{s.t.} \quad
+& \sum_{k} a_{lk} z_k = 1 && \text{every line, exactly once} \\
+& \sum_{k \in K_t^{priority}(l)} a_{lk} z_k = 1 && \text{every must-ship line, by a priority-eligible job} \\
+& \sum_k z_k \le m_t && \text{optional job-count cap} \\
+& z_k \in \{0,1\}
+\end{aligned}
+\]
+</div>
+<p>
+  \(\theta\) is 5 minutes per job. \(\pi_l\) is the line's own pick time, or 0.5 minutes when the file leaves it blank.
+  Under an exact cover the pick times add up to the same total for every split, so they do not change which cover wins.
+  Weight, volume, and the 15-line limit are not rows in the model: a job that breaks them is never built.
+  A truck with two docks gets two models, because each walk starts and ends at its own dock.
+</p>
+
+<h2 id="candidates">Building candidate jobs</h2>
+<ol class="eq">
+  <li><strong>Singletons.</strong> Every whole order that fits is a job on its own (or a single line, when there is no order id). This guarantees a cover always exists.</li>
+  <li><strong>Enumeration.</strong> By default, every union of whole orders at the dock that still fits the line cap, the location cap and one picker. A union that already fails is not grown further, so the list stays far below \(2^n\).</li>
+  <li><strong>Savings candidates.</strong> With <code>--destination-grouping</code>, a stop with at most 10 orders (<code>max_enumerate_lines</code>) is fully enumerated; a larger stop gets its singletons plus the Clarke–Wright merges. Clarke–Wright jobs are kept in the pool so the model is never worse than the heuristic.</li>
+  <li><strong>16-location cap.</strong> Held–Karp handles up to 16 pick slots plus the dock. A job with more is not built. With 15 lines per job, a job has at most 15 slots, so this cap removes nothing extra today.</li>
+</ol>
+
+<h2 id="fallback">Time limit and fallback</h2>
+<p>
+  HiGHS gets 120 seconds per truck and dock (after pricing). If it has a cover when time runs out, that cover is kept and
+  <code>solve.csv</code> records the <code>mip_gap</code>; 0 means proved best. If it has no cover, that truck uses the line-level savings
+  jobs, which can split an order: <code>fallback</code> is true and <code>mip_gap</code> is blank. <code>minutes</code> is that truck's full objective.
+</p>
+
+<h2 id="results">Results on the 16-truck sample</h2>
+<p class="lede"><code>inputs/chunk_warehouse/truck_loads.csv</code>, 2,247 lines both sides cover, 2026-10-13. Every minute total below is the Held–Karp walk, plus 5 minutes per job, plus each line's pick time. On this file the pick time charged for every covered line is 0.5 minutes, so pick time is 1,123.5 minutes in every row.</p>
+<table>
+  <tr><th></th><th>Model</th><th>Clarke–Wright, same rules</th></tr>
+  <tr><td>Jobs</td><td>171</td><td>187 (16 more)</td></tr>
+  <tr><td>Minutes</td><td>2,975.885</td><td>3,164.469 (188.6 more)</td></tr>
+  <tr><td>Gain</td><td colspan="2">6.3% of the model's minutes (6.0% of Clarke–Wright's)</td></tr>
+  <tr><td>Runtime</td><td>919 s before the distance table. Every truck proved optimal, no fallback. Truck 1 and truck 2 have since been retimed at 187.7 s and 92.6 s.</td><td>32 s</td></tr>
+</table>
+<div class="cards">
+  <div class="card"><strong>Rejected</strong>6 orders, 4.1–5.2 m³ each, 48 lines. Above the 4.0 m³ forklift limit.</div>
+  <div class="card"><strong>One stop per job</strong>195 jobs, 3,204.623 min. That is 229 minutes and 24 jobs more than stops mixed.</div>
+  <div class="card"><strong>Whole orders</strong>Line-level savings, scored the same way: 168 jobs, 2,371.931 min. Keeping orders whole costs at least 604 minutes on this one wave. A better split would cost more.</div>
+</div>
+<p>
+  The savings jobs in that last card were priced with Held–Karp for the comparison.
+  Adding up <code>walk_minutes</code> from <code>chunk_loads.py</code> is a different total, because that column is the nearest-neighbor tour.
+  The note for the rule owner is <code>order_picking/chunker/order_whole_cost_memo.md</code>.
+</p>
+
+<h2 id="runtime">Where the time goes</h2>
+<p>
+  Almost all of the time is the walking tour of each candidate, in Python, before HiGHS starts.
+  Truck 1 has 1,301 candidates. Building that list takes under 0.01 s. The 1,270 merged jobs are different sets of locations, so the tour cache, which already stores a tour by dock and sorted slots, hits only the 31 single orders.
+  A lower bound equal to the sum of each stop's cheapest outgoing leg dropped none of those merged jobs.
+</p>
+<table>
+  <tr><th></th><th>Truck 1</th><th>Truck 2</th></tr>
+  <tr><td>Dictionary tour, pricing only</td><td>356 s</td><td>114 s</td></tr>
+  <tr><td>Live solve after the distance table</td><td>187.7 s</td><td>92.6 s</td></tr>
+  <tr><td>HiGHS</td><td>0.06 s, gap 0</td><td>0.07 s, gap 0</td></tr>
+  <tr><td>Same cover as the long run</td><td>14 jobs, 253.200 min</td><td>12 jobs, 211.754 min</td></tr>
+</table>
+<p>
+  The distance table is what the code uses now: one lookup per leg, then the subset loop reads the table.
+  The 919 s wave has not been rerun since that change, so the full-file time is still the earlier figure.
+  One run before a shift is the intended use, and about three minutes on the biggest truck is the accepted cost.
+  Pricing trucks in separate processes, or compiling the tour loop, is not in the code.
+</p>
+
+<h2 id="open">Open decisions</h2>
+<ul>
+  <li><strong>Keeping an order whole.</strong> The rule stays. On this wave it costs at least 604 minutes against a savings run that may split orders. The note for the owner is <code>order_picking/chunker/order_whole_cost_memo.md</code>. Splitting only the large orders has not been measured.</li>
+  <li><strong>Pallet jack for a light job.</strong> <code>--prefer-jack</code> is the penalty, in release-weight units, and it defaults to 0. The chunker still leaves <code>required_equipment</code> blank when a jack can carry the job. Turning the penalty on for a live wave needs a chosen number below the smallest job weight.</li>
+</ul>
+
+<h2 id="research">Research basis</h2>
+<table>
+  <tr><th>Source</th><th>What it gives this model</th></tr>
+  <tr><td>Valle et al. 2017 — <a href="https://doi.org/10.1016/j.ejor.2017.03.069">doi:10.1016/j.ejor.2017.03.069</a></td><td>Exact order batching and picker routing in one model</td></tr>
+  <tr><td>de Koster et al. 1999 — <a href="https://repub.eur.nl/pub/11852">repub.eur.nl/pub/11852</a></td><td>Order batching with savings-style heuristics</td></tr>
+  <tr><td>Haouassi et al. 2022 — <a href="https://doi.org/10.1007/s10696-021-09425-8">doi:10.1007/s10696-021-09425-8</a></td><td>Batching when orders may or may not be split</td></tr>
+  <tr><td>Clarke &amp; Wright 1964 — <a href="https://doi.org/10.1287/opre.12.4.568">doi:10.1287/opre.12.4.568</a></td><td>The standalone savings chunker. Also the extra candidates when <code>--destination-grouping</code> is on and a stop has more than 10 orders.</td></tr>
+  <tr><td>Held &amp; Karp 1962 — <a href="https://doi.org/10.1137/0110015">doi:10.1137/0110015</a></td><td>Exact shortest tour for each candidate job</td></tr>
+</table>
+
+<h2 id="files">Where the equations live</h2>
+<table>
+  <tr><th>Piece</th><th>File</th></tr>
+  <tr><td>Truck loads for the sample</td><td><code>order_picking/chunker/build_truck_loads.py</code></td></tr>
+  <tr><td>Model, candidates, Held–Karp, fallback</td><td><code>order_picking/chunker/chunk_model.py</code></td></tr>
+  <tr><td>Clarke–Wright chunker</td><td><code>order_picking/chunker/chunk_loads.py</code></td></tr>
+  <tr><td>Picker route and assignment</td><td><code>order_picking/source/order_picking_optimizer.py</code></td></tr>
+  <tr><td>Full formulation</td><td><code>order_picking/chunker/formulation.md</code></td></tr>
+  <tr><td>Whole-order cost note</td><td><code>order_picking/chunker/order_whole_cost_memo.md</code></td></tr>
+  <tr><td>Decision log</td><td><code>DECISIONS.md</code> (2026-10-13)</td></tr>
+</table>
+
+</main>
+</div>
+<footer>
+  Truck load chunker. Orders onto trucks, trucks into jobs, jobs onto pickers. Chunker minutes are the Held–Karp walk plus 5 per job plus each line's pick time.
+</footer>
+</body>
+</html>
