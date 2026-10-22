@@ -189,6 +189,13 @@ def chunk_loads(
     lines = _read_lines(loads, settings)
     if not lines:
         raise ValueError("The truck-load table has no lines.")
+    if settings.max_job_volume is not None:
+        missing_volume = [line.item_id for line in lines if line.volume is None]
+        if missing_volume:
+            raise ValueError(
+                "A line is missing volume and max_job_volume is set "
+                f"({missing_volume[0]}). Supply a volume for every line."
+            )
     tiers = _normalize_tier_table(DEFAULT_TIER_MULTIPLIERS)
     built: List[dict] = []
     grouped: Dict[tuple, List[_Line]] = {}

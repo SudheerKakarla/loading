@@ -29,11 +29,11 @@ weight/volume capacity (C2, C4), while discouraging workload imbalance
 across pickers (C5). The default backend is HiGHS
 (``order_picking_highs.py``, via ``scipy.optimize.milp``). Pass
 ``assignment_solver="gurobi"`` to use Gurobi, or ``"auto"`` to use Gurobi
-only when a license checks out. Order weighting
-follows a linear, non-lexicographic
-scheme (C8): all orders equally weighted recovers plain count maximization
-(``benchmark_mode``); a "must-ship" order is represented as a large but
-finite ``priority_weight`` rather than a hard precedence rule. A finite
+only when a license checks out. Order weighting follows a linear scheme (C8) unless
+``staged_assignment`` is set. All orders equally weighted recovers plain
+count maximization (``benchmark_mode``). A "must-ship" order is a large but
+finite ``priority_weight``. The staged flag releases must-ship jobs by
+count, then other jobs by weight, then minimises lateness. A finite
 ``priority_weight`` already on the order is used as-is. Otherwise
 ``compute_priority_weight`` fills it from cutoff wave, wait time, and
 account tier before assignment.
@@ -42,7 +42,7 @@ Note on feasibility: the default phase 2 model is always feasible, since
 leaving every order unfulfilled (all ``y[o] = 0``) is a trivially valid
 solution. "Infeasibility" in that model shows up as a low objective and
 orders in ``orders_not_fulfilled``. ``require_must_ship`` can make the
-model infeasible when a must-ship job does not fit the shift.
+model infeasible when the required must-ship jobs cannot all fit.
 """
 
 from __future__ import annotations
@@ -68,6 +68,10 @@ DEFAULT_WAVE_HOURS = 8.0
 # Any positive weight shares a shift when the fulfilled set is unchanged.
 # At this size, sharing does not pay for dropping an order that still fits.
 SHARE_SHIFT_BALANCE = 0.001
+# Later stages may swap equal-value jobs. The lock sits far below any weight.
+_LOCK_TOLERANCE = 1e-6
+# A must-ship count is an integer. Half a job cannot hide inside this gap.
+_MUST_COUNT_ABS_GAP = 0.5
 URGENCY_OVERDUE = 6.0
 URGENCY_THIS_WAVE = 4.0
 URGENCY_NEXT_WAVE = 2.0
@@ -666,18 +670,50 @@ def _solve_assignment_gurobi(
     jack_penalty: float = 0.0,
     penalized_pairs: Sequence = (),
     forced_orders: Sequence[str] = (),
+    stage: str = "weighted",
+    locks: Optional[dict] = None,
+    must_ship_ids: Sequence[str] = (),
+    abs_gap: Optional[float] = None,
+    accept_incumbent: bool = False,
+    objective_upper: Optional[float] = None,
 ) -> dict:
+    """Same model as ``solve_assignment_highs``, solved with Gurobi.
+
+    Gurobi stops when either the relative gap or the absolute gap is met.
+    The relative gap is set to 0 and the absolute gap to ``abs_gap``, so a
+    looser caller ``mip_gap`` cannot end the solve early.
+    ``objective_upper`` is recorded. It is not a second relative stop.
+    """
+    import time
+
     import gurobipy as gp
     from gurobipy import GRB
 
+    del mip_gap
+    held = locks or {}
+    must_ids = [oid for oid in must_ship_ids if oid in weight]
+    must_set = set(must_ids)
+    tiers = lateness_tier or {}
+    need_lateness = stage in {"lateness", "balance", "jack"} or "lateness" in held or (
+        stage == "weighted" and lateness_weight > 0.0
+    )
+    dated = [
+        oid
+        for oid in weight
+        if need_lateness and deadlines is not None and oid in deadlines
+    ]
+    known_stages = {"weighted", "must_count", "ordinary", "lateness", "balance", "jack"}
+    if stage not in known_stages:
+        raise ValueError(f"Unknown assignment stage {stage!r}.")
+
     model = gp.Model("order_picking_assignment")
     model.Params.OutputFlag = 0
-    model.Params.TimeLimit = time_limit
-    if mip_gap is not None:
-        model.Params.MIPGap = mip_gap
+    model.Params.TimeLimit = float(time_limit)
+    model.Params.MIPGap = 0.0
+    model.Params.MIPGapAbs = 0.0 if abs_gap is None else float(abs_gap)
 
     y = model.addVars(list(weight.keys()), vtype=GRB.BINARY, name="fulfilled")
-    x = model.addVars(eligible_pairs, vtype=GRB.BINARY, name="assign")
+    x = model.addVars(list(eligible_pairs), vtype=GRB.BINARY, name="assign")
     workload = model.addVars(list(picker_ids), lb=0.0, name="workload")
     u = model.addVars(list(picker_ids), lb=0.0, name="imbalance")
 
@@ -711,12 +747,8 @@ def _solve_assignment_gurobi(
             raise ValueError(f"Forced order {oid} is not in the assignment.")
         model.addConstr(y[oid] == 1, name=f"force_{oid}")
 
-    lateness_cost = 0.0
-    dated = [
-        oid
-        for oid in weight
-        if lateness_weight > 0.0 and deadlines is not None and oid in deadlines
-    ]
+    completion = {}
+    late = {}
     if dated:
         from assignment_reports import edd_sequence
 
@@ -748,40 +780,172 @@ def _solve_assignment_gurobi(
                 >= completion[oid] - float(deadlines[oid]) - big_m_late * (1 - y[oid]),
                 name=f"late_{oid}",
             )
-        tiers = lateness_tier or {}
-        lateness_cost = gp.quicksum(
-            float(lateness_weight) * float(tiers.get(oid, 1.0)) * late[oid] for oid in dated
+
+    tolerance = float(held.get("tolerance", _LOCK_TOLERANCE))
+    if "must_count" in held and must_ids:
+        model.addConstr(
+            gp.quicksum(y[oid] for oid in must_ids) >= float(held["must_count"]) - tolerance,
+            name="lock_must_count",
         )
-    jack_cost = 0.0
-    if jack_penalty and penalized_pairs:
-        jack_cost = gp.quicksum(float(jack_penalty) * x[pair] for pair in penalized_pairs if pair in x)
+    if "ordinary_weight" in held:
+        ordinary = [oid for oid in weight if oid not in must_set]
+        model.addConstr(
+            gp.quicksum(float(weight[oid]) * y[oid] for oid in ordinary)
+            >= float(held["ordinary_weight"]) - tolerance,
+            name="lock_ordinary",
+        )
+    if "lateness" in held and late:
+        model.addConstr(
+            gp.quicksum(float(tiers.get(oid, 1.0)) * late[oid] for oid in late)
+            <= float(held["lateness"]) + tolerance,
+            name="lock_lateness",
+        )
+    if "balance" in held and picker_ids:
+        model.addConstr(
+            gp.quicksum(u[pid] for pid in picker_ids) <= float(held["balance"]) + tolerance,
+            name="lock_balance",
+        )
+    if "jack" in held:
+        penalized = [pair for pair in penalized_pairs if pair in x]
+        if penalized:
+            model.addConstr(
+                gp.quicksum(x[pair] for pair in penalized) <= float(held["jack"]) + tolerance,
+                name="lock_jack",
+            )
 
-    model.setObjective(
-        gp.quicksum(weight[oid] * y[oid] for oid in weight)
-        - balance_weight * gp.quicksum(u[pid] for pid in picker_ids)
-        - lateness_cost
-        - jack_cost,
-        GRB.MAXIMIZE,
-    )
+    if stage == "weighted":
+        lateness_cost = gp.quicksum(
+            float(lateness_weight) * float(tiers.get(oid, 1.0)) * late[oid] for oid in late
+        )
+        jack_cost = gp.quicksum(
+            float(jack_penalty) * x[pair] for pair in penalized_pairs if pair in x and jack_penalty
+        )
+        objective = (
+            gp.quicksum(float(weight[oid]) * y[oid] for oid in weight)
+            - float(balance_weight) * gp.quicksum(u[pid] for pid in picker_ids)
+            - lateness_cost
+            - jack_cost
+        )
+        model.setObjective(objective, GRB.MAXIMIZE)
+    elif stage == "must_count":
+        model.setObjective(gp.quicksum(y[oid] for oid in must_ids), GRB.MAXIMIZE)
+    elif stage == "ordinary":
+        model.setObjective(
+            gp.quicksum(float(weight[oid]) * y[oid] for oid in weight if oid not in must_set),
+            GRB.MAXIMIZE,
+        )
+    elif stage == "lateness":
+        model.setObjective(
+            gp.quicksum(float(tiers.get(oid, 1.0)) * late[oid] for oid in late),
+            GRB.MINIMIZE,
+        )
+    elif stage == "balance":
+        model.setObjective(gp.quicksum(u[pid] for pid in picker_ids), GRB.MINIMIZE)
+    else:
+        model.setObjective(
+            gp.quicksum(x[pair] for pair in penalized_pairs if pair in x),
+            GRB.MINIMIZE,
+        )
+
+    started = time.perf_counter()
     model.optimize()
+    runtime = time.perf_counter() - started
+    diagnostics = _gurobi_diagnostics(model, abs_gap, GRB)
+    diagnostics["runtime"] = runtime
+    if objective_upper is None:
+        diagnostics["objective_upper_used"] = None
+    else:
+        diagnostics["objective_upper_used"] = max(float(objective_upper), 1.0)
 
-    optimal = model.Status == GRB.OPTIMAL
-    if not optimal:
+    proven = model.Status == GRB.OPTIMAL and model.SolCount > 0
+    keep_statuses = {GRB.OPTIMAL, GRB.TIME_LIMIT}
+    for name in ("SUBOPTIMAL", "INTERRUPTED", "NODE_LIMIT"):
+        value = getattr(GRB, name, None)
+        if value is not None:
+            keep_statuses.add(value)
+    usable = model.SolCount > 0 and model.Status in keep_statuses
+    keep = proven or (accept_incumbent and usable)
+    if not keep:
         return {
-            "status": model.Status,
+            "status": int(model.Status),
             "is_optimal": False,
             "objective": None,
             "y": {},
             "x": {},
             "workload": {},
+            **diagnostics,
         }
+
+    y_values = {oid: float(y[oid].X) for oid in weight}
+    stage_value = _gurobi_stage_value(
+        stage, y_values, late, u, x, weight, tiers, must_ids, picker_ids, penalized_pairs
+    )
+    objective_value = float(model.ObjVal) if stage == "weighted" else stage_value
     return {
-        "status": model.Status,
+        "status": int(model.Status),
         "is_optimal": True,
-        "objective": float(model.ObjVal),
-        "y": {oid: float(y[oid].X) for oid in weight},
+        "objective": objective_value,
+        "stage_value": stage_value,
+        "y": y_values,
         "x": {pair: float(x[pair].X) for pair in eligible_pairs},
         "workload": {pid: float(workload[pid].X) for pid in picker_ids},
+        **diagnostics,
+    }
+
+
+def _gurobi_stage_value(
+    stage: str,
+    y_values: Dict[str, float],
+    late,
+    imbalance,
+    assign,
+    weight: Dict[str, float],
+    tiers: Dict[str, float],
+    must_ids: Sequence[str],
+    picker_ids: Sequence[str],
+    penalized_pairs: Sequence,
+) -> float:
+    """Natural-unit value of this stage, read off the Gurobi solution."""
+    if stage == "must_count":
+        return float(sum(y_values[oid] for oid in must_ids))
+    if stage == "ordinary":
+        must_set = set(must_ids)
+        return float(sum(weight[oid] * y_values[oid] for oid in weight if oid not in must_set))
+    if stage == "lateness":
+        return float(sum(float(tiers.get(oid, 1.0)) * float(late[oid].X) for oid in late))
+    if stage == "balance":
+        return float(sum(float(imbalance[pid].X) for pid in picker_ids))
+    if stage == "jack":
+        return float(sum(float(assign[pair].X) for pair in penalized_pairs if pair in assign))
+    return float(sum(weight[oid] * y_values[oid] for oid in weight))
+
+
+def _gurobi_diagnostics(model, abs_gap: Optional[float], grb) -> dict:
+    """Best bound and gap in the model's own sense."""
+    bound = None
+    try:
+        bound_value = float(model.ObjBound)
+    except Exception:
+        bound_value = None
+    if bound_value is not None and math.isfinite(bound_value):
+        bound = bound_value
+    rel_gap = None
+    abs_reached = None
+    if model.SolCount > 0:
+        try:
+            incumbent = float(model.ObjVal)
+            rel_gap = float(model.MIPGap)
+            if bound is not None:
+                abs_reached = abs(incumbent - bound)
+        except Exception:
+            rel_gap = None
+    return {
+        "solver_bound": bound,
+        "solver_gap": rel_gap,
+        "solver_abs_gap": abs_reached,
+        "time_limit_hit": int(model.Status) == int(grb.TIME_LIMIT),
+        "mip_rel_gap_used": 0.0,
+        "mip_abs_gap_used": None if abs_gap is None else float(abs_gap),
     }
 
 
@@ -828,6 +992,255 @@ def _picker_blockers(order_row: Any, picker_rows: Sequence[Any]) -> List[str]:
     return blockers
 
 
+def _shift_start_minutes(picker) -> float:
+    """Minutes from the wave start. A missing clock starts at 0."""
+    raw = getattr(picker, "shift_start", None)
+    if _is_missing(raw):
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return value
+
+
+def _cannot_meet_cutoff(
+    job_duration: float,
+    deadline: Optional[float],
+    picker_ids: Sequence[str],
+    shift_starts: Dict[str, float],
+    shifts: Dict[str, float],
+) -> bool:
+    """True when every eligible picker is already too late to start this job.
+
+    The window is ``A_r(T) = min(max(0, T - s_r), shift_r)``, not the raw cutoff.
+    A job with no deadline, or with no eligible picker, is left to the model.
+    """
+    if deadline is None or not picker_ids:
+        return False
+    from assignment_reports import available_before_cutoff
+
+    for pid in picker_ids:
+        window = available_before_cutoff(deadline, shift_starts[pid], shifts[pid])
+        if float(job_duration) <= window + 1e-9:
+            return False
+    return True
+
+
+def _solve_backend(solver_name: str, **kwargs) -> dict:
+    if solver_name == "gurobi":
+        return _solve_assignment_gurobi(**kwargs)
+    from order_picking_highs import solve_assignment_highs
+
+    return solve_assignment_highs(**kwargs)
+
+
+def _stage_record(name: str, solved: dict) -> dict:
+    from assignment_reports import stop_reason
+
+    incumbent = solved.get("stage_value")
+    if incumbent is None:
+        incumbent = solved.get("objective")
+    time_limit_hit = bool(solved.get("time_limit_hit"))
+    return {
+        "stage": name,
+        "status": solved.get("status"),
+        "incumbent": incumbent,
+        "bound": solved.get("solver_bound"),
+        "abs_gap": solved.get("solver_abs_gap"),
+        "rel_gap": solved.get("solver_gap"),
+        "runtime": solved.get("runtime"),
+        "time_limit_hit": time_limit_hit,
+        "mip_rel_gap_used": solved.get("mip_rel_gap_used"),
+        "mip_abs_gap_used": solved.get("mip_abs_gap_used"),
+        "objective_upper_used": solved.get("objective_upper_used"),
+        "stop": stop_reason(
+            time_limit_hit,
+            bool(solved.get("is_optimal")),
+            solved.get("solver_abs_gap"),
+            solved.get("mip_abs_gap_used"),
+        ),
+    }
+
+
+def _objective_upper(stage: str, common: dict, must_ids: Sequence[str]) -> float:
+    """Upper bound on a tight stage objective.
+
+    A relative gap of ``absolute / scale`` stops within ``absolute`` only
+    when ``scale`` is at least the objective size. Continuous lateness and
+    imbalance can exceed the sum of the absolute coefficients.
+    """
+    weight = common["weight"]
+    must_set = {oid for oid in must_ids if oid in weight}
+    deadlines = common.get("deadlines") or {}
+    tiers = common.get("lateness_tier") or {}
+    shifts = [max(float(value), 0.0) for value in common["picker_shift"].values()]
+    big_m = max(shifts) if shifts else 1.0
+    if big_m <= 0.0:
+        big_m = 1.0
+    dated = [oid for oid in weight if oid in deadlines]
+    if dated:
+        earliest = min(float(deadlines[oid]) for oid in dated)
+        big_m_late = big_m + max(0.0, -earliest)
+    else:
+        big_m_late = big_m
+    lateness_upper = sum(float(tiers.get(oid, 1.0)) * big_m_late for oid in dated)
+    # Sum of absolute deviations from the mean is at most twice the workloads.
+    balance_upper = 2.0 * sum(shifts)
+    jack_upper = float(len(common.get("penalized_pairs") or ()))
+    release = sum(max(float(weight[oid]), 0.0) for oid in weight)
+    ordinary = sum(
+        max(float(weight[oid]), 0.0) for oid in weight if oid not in must_set
+    )
+    if stage == "must_count":
+        return max(float(len(must_set)), 1.0)
+    if stage == "ordinary":
+        return max(ordinary, 1.0)
+    if stage == "lateness":
+        return max(lateness_upper, 1.0)
+    if stage == "balance":
+        return max(balance_upper, 1.0)
+    if stage == "jack":
+        return max(jack_upper, 1.0)
+    upper = release
+    balance_weight = float(common.get("balance_weight") or 0.0)
+    lateness_weight = float(common.get("lateness_weight") or 0.0)
+    jack_penalty = float(common.get("jack_penalty") or 0.0)
+    if balance_weight:
+        upper += abs(balance_weight) * balance_upper
+    if lateness_weight:
+        upper += abs(lateness_weight) * lateness_upper
+    if jack_penalty:
+        upper += abs(jack_penalty) * jack_upper
+    return max(upper, 1.0)
+
+
+def _stage_abs_gap(
+    stage: str,
+    weight: Dict[str, float],
+    must_ids: Sequence[str],
+    objective_upper: float,
+) -> float:
+    """Absolute stop for one stage, in that stage's own units."""
+    from assignment_reports import reachable_absolute_gap
+
+    if stage == "must_count":
+        return _MUST_COUNT_ABS_GAP
+    if stage == "ordinary":
+        must_set = set(must_ids)
+        ordinary = [weight[oid] for oid in weight if oid not in must_set]
+        basis = ordinary or list(weight.values())
+        return reachable_absolute_gap(basis, objective_upper)
+    if stage == "jack":
+        return min(_MUST_COUNT_ABS_GAP, reachable_absolute_gap(weight.values(), objective_upper))
+    return reachable_absolute_gap(weight.values(), objective_upper)
+
+
+def _solve_staged(
+    solver_name: str,
+    common: dict,
+    must_ship_ids: Sequence[str],
+    deadlines: Dict[str, float],
+    balance_weight: float,
+    prefer_jack: float,
+) -> dict:
+    """Release must-ship jobs, then other jobs, then lateness, balance, and jacks.
+
+    Each stage locks its own objective value, not the chosen job set, so a
+    later stage may swap equal-value jobs. The lock uses the incumbent, and
+    a time-limit stop is recorded on that stage. The returned objective is
+    the release-weight sum of the jobs that remain, not the last stage's
+    lateness or jack count.
+    """
+    weight = common["weight"]
+    must_ids = [oid for oid in must_ship_ids if oid in weight]
+    must_set = set(must_ids)
+    locks: Dict[str, float] = {"tolerance": _LOCK_TOLERANCE}
+    stages: List[dict] = []
+    plan: List[tuple] = []
+    if must_ids:
+        plan.append(("must_count", "must_count"))
+    if any(oid not in must_set for oid in weight):
+        plan.append(("ordinary", "ordinary_weight"))
+    if any(oid in deadlines for oid in weight):
+        plan.append(("lateness", "lateness"))
+    if balance_weight > 0.0 and common["picker_ids"]:
+        plan.append(("balance", "balance"))
+    if prefer_jack > 0.0 and any(pair[0] in weight for pair in common["penalized_pairs"]):
+        plan.append(("jack", "jack"))
+
+    solved: dict = {
+        "status": 0,
+        "is_optimal": True,
+        "objective": 0.0,
+        "y": {},
+        "x": {},
+        "workload": {},
+        "time_limit_hit": False,
+    }
+    for stage, lock_key in plan:
+        call = dict(common)
+        upper = _objective_upper(stage, common, must_ids)
+        call.update(
+            stage=stage,
+            locks=dict(locks),
+            must_ship_ids=must_ids,
+            abs_gap=_stage_abs_gap(stage, weight, must_ids, upper),
+            accept_incumbent=True,
+            objective_upper=upper,
+        )
+        solved = _solve_backend(solver_name, **call)
+        stages.append(_stage_record(stage, solved))
+        if not solved.get("is_optimal"):
+            solved["stages"] = stages
+            solved["time_limit_hit"] = any(row["time_limit_hit"] for row in stages)
+            return solved
+        locks[lock_key] = float(solved["stage_value"])
+
+    y = solved.get("y") or {}
+    solved["objective"] = float(
+        sum(float(weight[oid]) for oid in weight if float(y.get(oid, 0.0)) > 0.5)
+    )
+    solved["stages"] = stages
+    solved["time_limit_hit"] = any(row["time_limit_hit"] for row in stages)
+    return solved
+
+
+def _attach_solver_log(result: dict, solved: dict, gap_requested: Optional[float]) -> None:
+    """Copy bound, gap, and stage rows onto the public result."""
+    from assignment_reports import stop_reason
+
+    for key in (
+        "solver_bound",
+        "solver_gap",
+        "solver_abs_gap",
+        "time_limit_hit",
+        "mip_rel_gap_used",
+        "mip_abs_gap_used",
+        "objective_upper_used",
+        "runtime",
+        "stages",
+    ):
+        if key in solved:
+            result[key] = solved[key]
+    result["gap_requested"] = gap_requested
+    stages = list(result.get("stages") or [])
+    if stages:
+        if any(row.get("time_limit_hit") for row in stages):
+            result["stop"] = "time_limit"
+        else:
+            result["stop"] = stages[-1].get("stop") or "proven"
+        return
+    result["stop"] = stop_reason(
+        bool(solved.get("time_limit_hit")),
+        bool(solved.get("is_optimal")),
+        solved.get("solver_abs_gap"),
+        solved.get("mip_abs_gap_used"),
+    )
+
+
 def solve_order_assignment(
     orders,
     pickers,
@@ -843,6 +1256,8 @@ def solve_order_assignment(
     lateness_weight: float = 0.0,
     prefer_jack: float = 0.0,
     require_must_ship: bool = False,
+    staged_assignment: bool = False,
+    withhold_if_late_at_start: bool = False,
 ) -> dict:
     """Phase 2: assign routed orders to pickers (C1-C5, C8).
 
@@ -858,9 +1273,14 @@ def solve_order_assignment(
         maximization), overriding ``priority_weight`` (C8).
     balance_weight : weight on the workload-imbalance penalty term (C5).
         0 disables workload balancing in the objective.
-    time_limit : solver time limit in seconds.
-    mip_gap : optional relative MIP gap. HiGHS receives it as ``mip_rel_gap``;
-        Gurobi receives it as ``MIPGap``.
+    time_limit : solver time limit in seconds, applied to each stage.
+    mip_gap : recorded as ``gap_requested`` and not applied. The stop is an
+        absolute tolerance of a tenth of the smallest positive weight, raised
+        above solver noise when that still sits below half a job. SciPy only
+        accepts a relative gap, so HiGHS sets
+        ``mip_rel_gap = absolute / max(objective_upper, 1)``. Gurobi sets
+        ``MIPGap = 0`` and ``MIPGapAbs`` to that absolute tolerance, because
+        Gurobi stops when either gap is met.
     now, wave_hours, tier_multipliers : passed to ``compute_priority_weight``
         when a row has no explicit finite ``priority_weight``.
     assignment_solver : "highs" (default, open source), "gurobi", or "auto".
@@ -878,7 +1298,19 @@ def solve_order_assignment(
         forklift. Keep it below the smallest job weight so the penalty
         breaks ties toward a jack and does not pay for dropping the job.
     require_must_ship : when True, every must-ship job is released. The
-        model can then be infeasible if those jobs do not fit the shift.
+        model can then be infeasible if those jobs cannot all fit the shift.
+        This is not the staged solve. An empty plan without this flag stays
+        a feasible optimum.
+    staged_assignment : when True, release must-ship jobs by count, then
+        maximise the weight of the other jobs that fit, then minimise
+        lateness, then balance if ``balance_weight`` > 0, then the jack
+        penalty if ``prefer_jack`` > 0. Each stage locks its objective
+        value, not the job set. The default remains the single weighted
+        objective. The public score is the release-weight sum.
+    withhold_if_late_at_start : when True, a job whose duration exceeds
+        ``A_r(T)`` for every eligible picker is left out before the solve,
+        with reason ``cannot_meet_cutoff``. Off by default. Jobs removed
+        here are not forced on by ``require_must_ship``.
 
     Returns
     -------
@@ -900,34 +1332,59 @@ def solve_order_assignment(
     if missing_routes:
         raise ValueError(f"Orders have no route duration: {missing_routes}.")
 
-    weight = {
-        o.order_id: (1.0 if benchmark_mode else float(o.priority_weight)) for o in order_rows
-    }
-    duration = {o.order_id: float(route_durations[o.order_id]) for o in order_rows}
-
-    eligible_pairs = [
-        (o.order_id, p.picker_id) for o in order_rows for p in picker_rows if _eligible(o, p)
-    ]
-    eligible_pickers: Dict[str, set] = {oid: set() for oid in weight}
-    for oid, pid in eligible_pairs:
-        eligible_pickers[oid].add(pid)
     if lateness_weight < 0 or not math.isfinite(lateness_weight):
         raise ValueError("lateness_weight must be a finite number >= 0.")
     if prefer_jack < 0 or not math.isfinite(prefer_jack):
         raise ValueError("prefer_jack must be a finite number >= 0.")
+    from assignment_reports import reachable_absolute_gap
+
+    full_duration = {o.order_id: float(route_durations[o.order_id]) for o in order_rows}
+    full_deadlines, full_tiers = _assignment_clock(order_rows)
     picker_ids = [p.picker_id for p in picker_rows]
     picker_shift = {p.picker_id: float(p.shift_duration) for p in picker_rows}
-    deadlines, lateness_tier = _assignment_clock(order_rows)
-    equipment = {p.picker_id: str(p.equipment_type) for p in picker_rows}
-    jack_orders = {
-        oid for oid, pid in eligible_pairs if equipment.get(pid) == "pallet_jack"
+    shift_starts = {p.picker_id: _shift_start_minutes(p) for p in picker_rows}
+    full_pairs = [
+        (o.order_id, p.picker_id) for o in order_rows for p in picker_rows if _eligible(o, p)
+    ]
+    full_eligible: Dict[str, set] = {o.order_id: set() for o in order_rows}
+    for oid, pid in full_pairs:
+        full_eligible[oid].add(pid)
+
+    withheld = []
+    active_rows = list(order_rows)
+    if withhold_if_late_at_start:
+        active_rows = []
+        for row in order_rows:
+            if _cannot_meet_cutoff(
+                full_duration[row.order_id],
+                full_deadlines.get(row.order_id),
+                list(full_eligible[row.order_id]),
+                shift_starts,
+                picker_shift,
+            ):
+                withheld.append(row)
+            else:
+                active_rows.append(row)
+
+    weight = {
+        o.order_id: (1.0 if benchmark_mode else float(o.priority_weight)) for o in active_rows
     }
+    duration = {oid: full_duration[oid] for oid in weight}
+    eligible_pairs = [pair for pair in full_pairs if pair[0] in weight]
+    eligible_pickers = {oid: set(full_eligible[oid]) for oid in weight}
+    deadlines = {oid: full_deadlines[oid] for oid in weight if oid in full_deadlines}
+    lateness_tier = {oid: full_tiers[oid] for oid in weight}
+    equipment = {p.picker_id: str(p.equipment_type) for p in picker_rows}
+    jack_orders = {oid for oid, pid in eligible_pairs if equipment.get(pid) == "pallet_jack"}
     penalized_pairs = [
         (oid, pid)
         for oid, pid in eligible_pairs
         if oid in jack_orders and equipment.get(pid) == "forklift"
     ]
-    forced_orders = [row.order_id for row in order_rows if require_must_ship and _is_must_ship_row(row)]
+    forced_orders = [
+        row.order_id for row in active_rows if require_must_ship and _is_must_ship_row(row)
+    ]
+    must_ship_ids = [row.order_id for row in active_rows if _is_must_ship_row(row)]
     solver_name = _resolve_assignment_solver(assignment_solver)
     common = dict(
         weight=weight,
@@ -946,16 +1403,33 @@ def solve_order_assignment(
         penalized_pairs=penalized_pairs,
         forced_orders=forced_orders,
     )
-    if solver_name == "gurobi":
-        solved = _solve_assignment_gurobi(**common)
+    if staged_assignment:
+        solved = _solve_staged(
+            solver_name,
+            common,
+            must_ship_ids,
+            deadlines,
+            balance_weight,
+            prefer_jack,
+        )
     else:
-        from order_picking_highs import solve_assignment_highs
-
-        solved = solve_assignment_highs(**common)
+        upper = _objective_upper("weighted", common, must_ship_ids)
+        solved = _solve_backend(
+            solver_name,
+            **common,
+            abs_gap=reachable_absolute_gap(weight.values(), upper),
+            must_ship_ids=must_ship_ids,
+            objective_upper=upper,
+        )
     result = _public_assignment_result(weight, eligible_pickers, picker_ids, solved, solver_name)
+    for row in withheld:
+        result["orders_not_fulfilled"].append(
+            {"order_id": row.order_id, "reason": "cannot_meet_cutoff"}
+        )
+    _attach_solver_log(result, solved, mip_gap)
     from assignment_reports import drop_detail, late_jobs, schedule_lateness
 
-    schedule = schedule_lateness(result["picker_assignments"], duration, deadlines)
+    schedule = schedule_lateness(result["picker_assignments"], full_duration, full_deadlines)
     result["schedule"] = schedule
     result["late_jobs"] = late_jobs(schedule)
     result["late_minutes"] = sum(float(row["minutes_late"]) for row in result["late_jobs"])
@@ -968,18 +1442,22 @@ def solve_order_assignment(
         )
         if missed is None:
             continue
-        eligible = eligible_pickers[row.order_id]
-        detail = drop_detail(
-            _picker_blockers(row, picker_rows) if not eligible else [],
-            list(eligible),
-            duration[row.order_id],
-            workload,
-            picker_shift,
-        )
+        if missed["reason"] == "cannot_meet_cutoff":
+            detail = "cannot_meet_cutoff"
+        else:
+            eligible = full_eligible[row.order_id]
+            detail = drop_detail(
+                _picker_blockers(row, picker_rows) if not eligible else [],
+                list(eligible),
+                full_duration[row.order_id],
+                workload,
+                picker_shift,
+            )
         drops.append({"order_id": row.order_id, "reason": missed["reason"], "detail": detail})
     result["drops"] = drops
     if not result["is_optimal"] and require_must_ship:
         result["infeasible_must_ship"] = True
+        result["status_reason"] = "required_must_ship_jobs_cannot_all_fit"
     return result
 
 
@@ -1022,8 +1500,49 @@ def format_picking_solution(result: dict) -> str:
             f"Late jobs: {late_count}. Late minutes: {float(result['late_minutes']):.3f}."
         )
     if result.get("infeasible_must_ship"):
-        lines.append("No optimal plan: a must-ship job does not fit the shift.")
+        lines.append("Required must-ship jobs cannot all fit.")
+    if any(key in result for key in ("solver_bound", "solver_gap", "solver_abs_gap")):
+        lines.append(
+            "Solver status: {status}. Bound: {bound}. Relative gap: {gap}. "
+            "Absolute gap: {abs_gap}.".format(
+                status=result.get("status"),
+                bound=_format_measure(result.get("solver_bound")),
+                gap=_format_measure(result.get("solver_gap")),
+                abs_gap=_format_measure(result.get("solver_abs_gap")),
+            )
+        )
+    if result.get("stop"):
+        lines.append(f"Stop: {result['stop']}.")
+    for stage in result.get("stages") or []:
+        limit = "yes" if stage.get("time_limit_hit") else "no"
+        lines.append(
+            "Stage {name}: status {status}, stop {stop}, incumbent {incumbent}, "
+            "bound {bound}, absolute gap {abs_gap}, relative gap {rel_gap}, "
+            "runtime {runtime}s, time limit {limit}.".format(
+                name=stage.get("stage"),
+                status=stage.get("status"),
+                stop=stage.get("stop", "n/a"),
+                incumbent=_format_measure(stage.get("incumbent")),
+                bound=_format_measure(stage.get("bound")),
+                abs_gap=_format_measure(stage.get("abs_gap")),
+                rel_gap=_format_measure(stage.get("rel_gap")),
+                runtime=_format_measure(stage.get("runtime")),
+                limit=limit,
+            )
+        )
     return "\n".join(lines)
+
+
+def _format_measure(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(number):
+        return "n/a"
+    return f"{number:.6g}"
 
 
 # ---------------------------------------------------------------------------
@@ -1050,6 +1569,8 @@ def solve_order_picking(
     lateness_weight: float = 0.0,
     prefer_jack: float = 0.0,
     require_must_ship: bool = False,
+    staged_assignment: bool = False,
+    withhold_if_late_at_start: bool = False,
 ) -> dict:
     """Run phase 1 (routing) for every order, then phase 2 (assignment) over
     the resulting route durations. Returns the phase 2 solution dictionary
@@ -1078,6 +1599,8 @@ def solve_order_picking(
         lateness_weight=lateness_weight,
         prefer_jack=prefer_jack,
         require_must_ship=require_must_ship,
+        staged_assignment=staged_assignment,
+        withhold_if_late_at_start=withhold_if_late_at_start,
     )
     result["routes"] = routes
     if verbose:
@@ -1157,7 +1680,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument(
         "--require-must-ship",
         action="store_true",
-        help="Release every must-ship job. The model is infeasible when one does not fit.",
+        help="Release every must-ship job. The model is infeasible when those jobs cannot all fit.",
+    )
+    parser.add_argument(
+        "--staged-assignment",
+        action="store_true",
+        help=(
+            "Release must-ship jobs by count, then other jobs by weight, "
+            "then minimise lateness. Balance and the jack penalty run only "
+            "when those weights are positive. The default is one weighted objective."
+        ),
+    )
+    parser.add_argument(
+        "--withhold-if-late-at-start",
+        action="store_true",
+        help=(
+            "Leave out a job whose duration exceeds the time every eligible "
+            "picker can work before its cutoff. Reason: cannot_meet_cutoff."
+        ),
     )
     parser.add_argument("--assignments-out", type=Path, default=None, help="Write picker_id, order_id, duration.")
     parser.add_argument(
@@ -1187,6 +1727,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         lateness_weight=args.lateness_weight,
         prefer_jack=args.prefer_jack,
         require_must_ship=args.require_must_ship,
+        staged_assignment=args.staged_assignment,
+        withhold_if_late_at_start=args.withhold_if_late_at_start,
         verbose=True,
     )
     if args.report_dir is not None:
@@ -1198,6 +1740,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             utilisation,
             result.get("drops") or [],
             result.get("schedule") or [],
+            result.get("stages") or None,
         )
         print(format_assignment_report(utilisation, result.get("drops") or [], result.get("schedule") or []))
         print(f"Wrote {args.report_dir}")

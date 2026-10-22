@@ -50,6 +50,8 @@ def run_scenarios(
     require_must_ship: bool = False,
     balance_weight: float = 0.0,
     time_limit: float = 10.0,
+    staged_assignment: bool = False,
+    withhold_if_late_at_start: bool = False,
 ) -> pd.DataFrame:
     """Route once, assign each scenario, and write ``comparison.csv`` plus reports."""
     order_ids = [row.order_id for row in orders.itertuples(index=False)]
@@ -73,11 +75,19 @@ def run_scenarios(
             lateness_weight=lateness_weight,
             prefer_jack=prefer_jack,
             require_must_ship=require_must_ship,
+            staged_assignment=staged_assignment,
+            withhold_if_late_at_start=withhold_if_late_at_start,
         )
         report_dir = out_dir / name
         if result["is_optimal"]:
             utilisation = utilisation_rows(scenario_pickers, result["picker_workload"])
-            write_assignment_reports(report_dir, utilisation, result["drops"], result["schedule"])
+            write_assignment_reports(
+                report_dir,
+                utilisation,
+                result["drops"],
+                result["schedule"],
+                result.get("stages") or None,
+            )
             busy, pct = _rollup_pct(utilisation)
             comparison.append(
                 {
@@ -97,7 +107,8 @@ def run_scenarios(
             comparison.append(
                 {
                     "scenario": name,
-                    "status": "infeasible" if result.get("infeasible_must_ship") else "not_optimal",
+                    "status": result.get("status_reason")
+                    or ("infeasible" if result.get("infeasible_must_ship") else "not_optimal"),
                     "released": 0,
                     "dropped": 0,
                     "busy_minutes": 0.0,
@@ -127,6 +138,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--lateness-weight", type=float, default=0.0)
     parser.add_argument("--prefer-jack", type=float, default=0.0)
     parser.add_argument("--require-must-ship", action="store_true")
+    parser.add_argument("--staged-assignment", action="store_true")
+    parser.add_argument("--withhold-if-late-at-start", action="store_true")
     parser.add_argument("--balance-weight", type=float, default=0.0)
     parser.add_argument("--time-limit", type=float, default=10.0)
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -143,6 +156,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         lateness_weight=args.lateness_weight,
         prefer_jack=args.prefer_jack,
         require_must_ship=args.require_must_ship,
+        staged_assignment=args.staged_assignment,
+        withhold_if_late_at_start=args.withhold_if_late_at_start,
         balance_weight=args.balance_weight,
         time_limit=args.time_limit,
     )

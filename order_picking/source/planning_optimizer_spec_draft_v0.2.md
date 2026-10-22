@@ -1,8 +1,10 @@
 # Order Picking Planning Optimizer
 
-**Design draft v0.2, not the live spec.** The picker code follows `order_picking_planning_optimizer_spec.md` in this folder. This draft's Phase 1 default (Held-Karp) and its single `deadline_penalty_weight` term were not what shipped. Lateness, when enabled, is minutes past `cutoff_time` under earliest-deadline order. The chunker equations are `../chunker/formulation.md`.
+**Historical design draft v0.2.** Superseded on 2026-10-22 by `planning_optimizer_spec_v0.3.md`. The code follows `order_picking_planning_optimizer_spec.md`. The rows below are the v0.2 design. Where they disagree with v0.3, copy v0.3.
 
-**Specification v0.2** — revised after review of v0.1.
+Do not copy a `mip_gap` of 0.01. Do not treat lexicographic release as out of scope: `--staged-assignment` is that mode, and the weighted sum stays the default. Do not copy the Held–Karp Phase 1 default or `deadline_penalty_weight`. The chunker equations are `../chunker/formulation.md`.
+
+**Specification v0.2** — revised after review of v0.1. Kept as history.
 
 ## Revision notes (v0.1 to v0.2)
 
@@ -77,7 +79,7 @@ sum_o  w_o * y_o                      (weighted jobs fulfilled)
 where `y_o` is 1 if job o is fulfilled.
 
 - **Primary term:** the weighted sum of fulfilled jobs. Setting all weights to 1 recovers a plain count (benchmark mode).
-- **Weighted, not lexicographic:** the model may leave a higher-weight job unfulfilled if several lower-weight jobs produce a better total. A "must-ship" job is represented by a very large finite weight.
+- **Weighted by default.** The model may leave a higher-weight job unfulfilled if several lower-weight jobs produce a better total. A "must-ship" job is represented by a very large finite weight. The live solver's `--staged-assignment` flag is the lexicographic release (must-ship count, then other jobs by weight, then lateness). Copy that from the live spec.
 - **Secondary term:** minimize workload imbalance (C5), weighted by `balance_weight`.
 - **Tertiary term:** deadline overload (soft mode only), weighted by `deadline_penalty_weight`.
 
@@ -123,7 +125,7 @@ Each job carries a `priority_weight`. The optimizer maximizes the weighted sum o
 - `benchmark_mode = true` overrides every weight to 1.
 - A must-ship job gets `must_ship_weight`, a very large finite value (default 100000).
 - For customer orders, the weight is `urgency_factor × tier_factor`. For chunked jobs, see C16.
-- Strict lexicographic priority is out of scope.
+- The live default is the weighted sum. Lexicographic release is `--staged-assignment` in the live spec. This draft does not define that solve.
 
 ### C9: Precomputed Travel-Time Matrix (Routing Assumption)
 Phase 1 assumes a location-to-location travel-time matrix exists as input. One flat table may contain several depot nodes; "built per depot" only describes how the file may be assembled. Computing the matrix is out of scope.
@@ -262,7 +264,7 @@ Flat table; directed (the value from A to B may differ from B to A). One table m
 | `heuristic_max_iterations` | `max(50, 5 × n)` | Cap for 2-opt improvement |
 | `assignment_solver` | `highs` | Phase 2 solver. `gurobi` accepted if licensed |
 | `phase2_time_limit` | 60 seconds | |
-| `mip_gap` | 0.01 | Relative gap at which Phase 2 may stop |
+| `mip_gap` | ignored | Caller relative gap. The live stop is an absolute tolerance of a tenth of the smallest positive weight, raised above solver noise when that still sits below half a job. HiGHS encodes it as `mip_rel_gap = absolute / objective_upper` because SciPy has no absolute-gap option. Do not copy 0.01. |
 | `deadline_mode` | `soft` | `soft`, `hard` or `off` |
 | `deadline_penalty_weight` | 0.5 × typical standard weight per minute **[confirm]** | Weight on overload in soft mode |
 | `deadline_penalty_aggregation` | `sum` | `sum` or `max` |
@@ -447,7 +449,7 @@ Expect: every line appears in exactly one job; each job is within capacity; each
 - **Release times.** C14 is exact only when every job is available at wave start. With mid-wave releases it is only a necessary condition.
 - **Inter-dock travel.** The walk between the dock where one job ends and the dock where the next job starts is not included in durations.
 - Picker-specific speed, fatigue, or learning effects, and congestion between pickers.
-- Strict lexicographic priority.
+- Treating lexicographic release as unavailable. The live default is still the weighted sum. `--staged-assignment` is the opt-in mode, specified in the live spec.
 - Construction of the travel-time matrix.
 - A fully joint optimization of job composition and routing. The chunker is distance-aware but runs as a separate stage ahead of Phase 1. The literature on whether joint optimization is worth the added complexity is mixed.
 - Dock scheduling and the load builder itself, which supply truck departure times and loads.

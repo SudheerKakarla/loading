@@ -221,7 +221,7 @@
   <tr>
     <td>3. Pick</td>
     <td><code>source/order_picking_optimizer.py</code></td>
-    <td>One dock at a time. Phase 1 builds each job's walk from that dock. Phase 2 gives each released job to one picker, and the job stays whole.</td>
+    <td>One dock at a time. Phase 1 builds each job's walk from that dock. Phase 2 gives each released job to one picker, and the job stays whole. <code>source/run_docks.py</code> runs every depot folder and then sums busy minutes against the shift.</td>
   </tr>
 </table>
 <p>
@@ -231,7 +231,8 @@
 <pre><code>python chunker/build_truck_loads.py
 python chunker/chunk_model.py --loads inputs/chunk_warehouse/truck_loads.csv --travel inputs/layout_warehouse/travel_times.csv --pickers inputs/layout_warehouse/pickers.csv --out outputs/chunk_model
 python chunker/chunk_loads.py --loads inputs/chunk_warehouse/truck_loads.csv --travel inputs/layout_warehouse/travel_times.csv --pickers inputs/layout_warehouse/pickers.csv --out outputs/chunk_loads
-python source/order_picking_optimizer.py --orders outputs/chunk_model/by_depot/PACK_A/orders.csv --items outputs/chunk_model/by_depot/PACK_A/order_items.csv --pickers inputs/layout_warehouse/pickers.csv --travel inputs/layout_warehouse/travel_times.csv --depot PACK_A</code></pre>
+python source/order_picking_optimizer.py --orders outputs/chunk_model/by_depot/PACK_A/orders.csv --items outputs/chunk_model/by_depot/PACK_A/order_items.csv --pickers inputs/layout_warehouse/pickers.csv --travel inputs/layout_warehouse/travel_times.csv --depot PACK_A
+python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inputs/layout_warehouse/pickers.csv --travel inputs/layout_warehouse/travel_times.csv --out outputs/chunk_assign/docks --lateness-weight 1 --time-limit 60</code></pre>
 <p>
   The model prices each candidate with a Held–Karp tour and stores that length in <code>walk_minutes</code>.
   The 5 minutes per job and the pick time are in the objective and in <code>solve.csv</code>, and they stay out of <code>walk_minutes</code>.
@@ -241,9 +242,16 @@ python source/order_picking_optimizer.py --orders outputs/chunk_model/by_depot/P
 <p>
   Phase 1 computes a new walk from the dock and the job's slots. The default tour is nearest neighbor plus directed 2-opt. <code>--phase1 highs</code> asks for an exact tour.
   Phase 2 then assigns each released job to one eligible picker. A job that the shift cannot hold, or that loses to a higher-weight set of jobs, stays unreleased.
-  The default assignment maximises release weight. <code>--lateness-weight</code> also charges minutes past <code>cutoff_time</code>, read as minutes from the start of the shift, with each picker working in earliest-deadline order. <code>--prefer-jack</code> charges a jack-eligible job given to a forklift. Both default to 0.
+  The default assignment maximises release weight. The stop is a tenth of the smallest positive weight, raised above solver noise when that still sits below half a job. A caller relative gap is ignored.
+  <code>--lateness-weight</code> charges minutes past <code>cutoff_time</code>, read as minutes from the start of the shift, with each picker working in earliest-deadline order. <code>--prefer-jack</code> charges a jack-eligible job given to a forklift. Both default to 0.
+  On <code>--staged-assignment</code> any positive <code>--prefer-jack</code> minimises that count with coefficient 1. The 16-truck result is under Open decisions.
+  <code>--staged-assignment</code> releases must-ship jobs by count, then the other jobs by weight, then minimises lateness. The weighted sum stays the default.
   The chunker's 5 minutes are a batching charge, and the picker leaves them out of the walk.
-  Repeat the picker command with <code>--depot PACK_B</code> and that dock's folder. The two docks keep separate crews.
+  <code>run_docks.py</code> solves each depot folder and then raises if one picker's summed busy minutes exceed <code>shift_duration</code>. A pass is that minute total. Clock overlap and the walk between docks stay outside the screen. Each solve still sees the full picker file. The picker math is <a href="order_picking_model.html">order_picking_model.html</a>.
+</p>
+<p>
+  On 2026-10-21 that dock command, with lateness weight 1 and a 60 second stage limit, released every job on both docks under the weighted objective and again under <code>--staged-assignment</code>: 84 of 84 at PACK_A and 87 of 87 at PACK_B, late minutes 0, every stage <code>proven</code>.
+  The five PACK_B jobs left out by an earlier relative gap, <code>TRK02-J02</code>, <code>TRK14-J09</code>, <code>TRK14-J15</code>, <code>TRK16-J01</code>, and <code>TRK16-J03</code>, are in both plans. The reports are <code>outputs/chunk_assign/gap_wave/</code>.
 </p>
 
 <h2 id="what">What the chunker decides</h2>
@@ -419,15 +427,16 @@ python source/order_picking_optimizer.py --orders outputs/chunk_model/by_depot/P
 </table>
 <p>
   The distance table is what the code uses now: one lookup per leg, then the subset loop reads the table.
-  The 919 s wave has not been rerun since that change, so the full-file time is still the earlier figure.
-  One run before a shift is the intended use, and about three minutes on the biggest truck is the accepted cost.
-  Pricing trucks in separate processes, or compiling the tour loop, is not in the code.
+  The full wave after that table is 474.75 s, the same 171 jobs and 2,975.885 minutes, every truck gap 0, no fallback.
+  One run before a shift is the intended use.
+  Pricing trucks in separate processes, or compiling the tour loop, was measured as unnecessary for that use and is not in the code. Closed tries are <code>order_picking/TRIED.md</code>.
 </p>
 
 <h2 id="open">Open decisions</h2>
 <ul>
   <li><strong>Keeping an order whole.</strong> The rule stays. On this wave it costs at least 604 minutes against a savings run that may split orders. The note for the owner is <code>order_picking/chunker/order_whole_cost_memo.md</code>. Splitting only the large orders has not been measured.</li>
-  <li><strong>Pallet jack for a light job.</strong> <code>--prefer-jack</code> is the penalty, in release-weight units, and it defaults to 0. The chunker still leaves <code>required_equipment</code> blank when a jack can carry the job. Turning the penalty on for a live wave needs a chosen number below the smallest job weight.</li>
+  <li><strong>Pallet jack for a light job.</strong> <code>--prefer-jack</code> defaults to 0. On <code>--staged-assignment</code> any positive value minimises the count of jack-eligible jobs given to a forklift. The 2026-10-21 run kept every release and zero lateness, proved that count at 0, and then booked PJ04 and PJ08 past a shared 480-minute shift. The default stays 0. Reports are <code>outputs/chunk_assign/gap_wave/staged_prefer_jack/</code>.</li>
+  <li><strong>One crew for both docks.</strong> Each solve still reads the full picker file, so the 12 people are counted twice. <code>run_docks.py</code> sums busy minutes against <code>shift_duration</code>. That sum caught PJ04 at 506.5 and PJ08 at 504.7 on the prefer-jack plan. A total that still fits can overlap on the clock, and the 1.1-minute walk is outside the sum. A home dock is not assigned.</li>
 </ul>
 
 <h2 id="research">Research basis</h2>
@@ -446,10 +455,12 @@ python source/order_picking_optimizer.py --orders outputs/chunk_model/by_depot/P
   <tr><td>Truck loads for the sample</td><td><code>order_picking/chunker/build_truck_loads.py</code></td></tr>
   <tr><td>Model, candidates, Held–Karp, fallback</td><td><code>order_picking/chunker/chunk_model.py</code></td></tr>
   <tr><td>Clarke–Wright chunker</td><td><code>order_picking/chunker/chunk_loads.py</code></td></tr>
-  <tr><td>Picker route and assignment</td><td><code>order_picking/source/order_picking_optimizer.py</code></td></tr>
+  <tr><td>Picker route and assignment</td><td><code>order_picking/source/order_picking_optimizer.py</code>. The stop, staged release, and minute-sum screen are in <a href="order_picking_model.html">order_picking_model.html</a></td></tr>
+  <tr><td>Both docks, then the minute-sum screen</td><td><code>order_picking/source/run_docks.py</code></td></tr>
   <tr><td>Full formulation</td><td><code>order_picking/chunker/formulation.md</code></td></tr>
   <tr><td>Whole-order cost note</td><td><code>order_picking/chunker/order_whole_cost_memo.md</code></td></tr>
-  <tr><td>Decision log</td><td><code>DECISIONS.md</code> (2026-10-13)</td></tr>
+  <tr><td>Closed tries</td><td><code>order_picking/TRIED.md</code></td></tr>
+  <tr><td>Decision log</td><td><code>DECISIONS.md</code> (chunker 2026-10-13, assignment stop 2026-10-21)</td></tr>
 </table>
 
 </main>

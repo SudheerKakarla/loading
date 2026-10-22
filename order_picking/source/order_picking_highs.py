@@ -12,11 +12,15 @@ objective coefficients are the negation of the Gurobi maximization model.
 
 from __future__ import annotations
 
+import math
+import time
 from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import csr_matrix
+
+from assignment_reports import stopping_rel_gap
 
 
 def solve_assignment_highs(
@@ -35,6 +39,12 @@ def solve_assignment_highs(
     jack_penalty: float = 0.0,
     penalized_pairs: Sequence[Tuple[str, str]] = (),
     forced_orders: Sequence[str] = (),
+    stage: str = "weighted",
+    locks: Optional[dict] = None,
+    must_ship_ids: Sequence[str] = (),
+    abs_gap: Optional[float] = None,
+    accept_incumbent: bool = False,
+    objective_upper: Optional[float] = None,
 ) -> dict:
     """Solve the picker-assignment MILP with HiGHS.
 
@@ -48,14 +58,29 @@ def solve_assignment_highs(
     a deadline when each picker works in earliest-deadline order.
     ``jack_penalty`` charges a jack-eligible job given to a forklift.
     ``forced_orders`` fixes those jobs to be released.
+
+    ``stage`` selects the objective. ``weighted`` is the single combined
+    objective. The staged stages are ``must_count``, ``ordinary``,
+    ``lateness``, ``balance``, and ``jack``. ``locks`` holds earlier stage
+    values that this solve must keep. ``abs_gap`` is the absolute slack
+    allowed at termination. A relative ``mip_gap`` from the caller is not
+    applied. ``objective_upper`` is an upper bound on the objective size
+    and is the relative-gap denominator. When it is omitted, that
+    denominator is the sum of the absolute coefficients.
+    ``accept_incumbent`` keeps a time-limit solution.
     """
     order_ids = list(weight.keys())
     pairs = list(eligible_pairs)
     pickers = list(picker_ids)
+    must_ids = [oid for oid in must_ship_ids if oid in weight]
+    held = locks or {}
+    need_lateness = stage in {"lateness", "balance", "jack"} or "lateness" in held or (
+        stage == "weighted" and lateness_weight > 0.0
+    )
     dated = [
         oid
         for oid in order_ids
-        if lateness_weight > 0.0 and deadlines is not None and oid in deadlines
+        if need_lateness and deadlines is not None and oid in deadlines
     ]
     n_y = len(order_ids)
     n_x = len(pairs)
@@ -84,16 +109,37 @@ def solve_assignment_highs(
         }
 
     c = np.zeros(n)
-    for oid, i in idx_y.items():
-        c[i] = -float(weight[oid])
-    for pid, i in idx_u.items():
-        c[i] = float(balance_weight)
     tiers = lateness_tier or {}
-    for oid, i in idx_l.items():
-        c[i] = float(lateness_weight) * float(tiers.get(oid, 1.0))
-    for pair in penalized_pairs:
-        if pair in idx_x and jack_penalty:
-            c[idx_x[pair]] += float(jack_penalty)
+    must_set = set(must_ids)
+    if stage == "weighted":
+        for oid, i in idx_y.items():
+            c[i] = -float(weight[oid])
+        for pid, i in idx_u.items():
+            c[i] = float(balance_weight)
+        for oid, i in idx_l.items():
+            c[i] = float(lateness_weight) * float(tiers.get(oid, 1.0))
+        for pair in penalized_pairs:
+            if pair in idx_x and jack_penalty:
+                c[idx_x[pair]] += float(jack_penalty)
+    elif stage == "must_count":
+        for oid in must_ids:
+            c[idx_y[oid]] = -1.0
+    elif stage == "ordinary":
+        for oid, i in idx_y.items():
+            if oid not in must_set:
+                c[i] = -float(weight[oid])
+    elif stage == "lateness":
+        for oid, i in idx_l.items():
+            c[i] = float(tiers.get(oid, 1.0))
+    elif stage == "balance":
+        for pid, i in idx_u.items():
+            c[i] = 1.0
+    elif stage == "jack":
+        for pair in penalized_pairs:
+            if pair in idx_x:
+                c[idx_x[pair]] += 1.0
+    else:
+        raise ValueError(f"Unknown assignment stage {stage!r}.")
 
     integrality = np.zeros(n, dtype=int)
     integrality[: n_y + n_x] = 1
@@ -175,6 +221,30 @@ def solve_assignment_highs(
                 np.inf,
             )
 
+    tolerance = float(held.get("tolerance", 1e-6))
+    if "must_count" in held:
+        coeffs = {idx_y[oid]: 1.0 for oid in must_ids}
+        add_row(coeffs, float(held["must_count"]) - tolerance, np.inf)
+    if "ordinary_weight" in held:
+        coeffs = {
+            idx_y[oid]: float(weight[oid])
+            for oid in order_ids
+            if oid not in must_set
+        }
+        add_row(coeffs, float(held["ordinary_weight"]) - tolerance, np.inf)
+    if "lateness" in held and idx_l:
+        coeffs = {idx_l[oid]: float(tiers.get(oid, 1.0)) for oid in idx_l}
+        add_row(coeffs, -np.inf, float(held["lateness"]) + tolerance)
+    if "balance" in held:
+        add_row({idx_u[pid]: 1.0 for pid in pickers}, -np.inf, float(held["balance"]) + tolerance)
+    if "jack" in held:
+        coeffs = {}
+        for pair in penalized_pairs:
+            if pair in idx_x:
+                coeffs[idx_x[pair]] = 1.0
+        if coeffs:
+            add_row(coeffs, -np.inf, float(held["jack"]) + tolerance)
+
     data: list = []
     row_index: list = []
     col_index: list = []
@@ -185,14 +255,22 @@ def solve_assignment_highs(
             col_index.append(col)
     matrix = csr_matrix((data, (row_index, col_index)), shape=(len(rows), n))
 
+    del mip_gap  # A caller relative gap must not loosen this solve.
+    # ``objective_upper`` bounds the objective. The sum of |coefficients|
+    # does not, once a continuous lateness or balance variable is present.
+    if objective_upper is None:
+        scale = max(float(np.abs(c).sum()), 1.0)
+    else:
+        scale = max(float(objective_upper), 1.0)
+    rel_gap = 0.0 if abs_gap is None else stopping_rel_gap(float(abs_gap), scale)
     options = {
         "disp": False,
         "time_limit": float(time_limit),
         "presolve": True,
+        "mip_rel_gap": rel_gap,
     }
-    if mip_gap is not None:
-        options["mip_rel_gap"] = float(mip_gap)
-
+    maximize = stage in {"weighted", "must_count", "ordinary"}
+    started = time.perf_counter()
     res = milp(
         c=c,
         integrality=integrality,
@@ -200,9 +278,15 @@ def solve_assignment_highs(
         constraints=LinearConstraint(matrix, row_lb, row_ub),
         options=options,
     )
+    runtime = time.perf_counter() - started
 
-    optimal = int(res.status) == 0 and res.x is not None
-    if not optimal:
+    proven = int(res.status) == 0 and res.x is not None
+    usable = res.x is not None and int(res.status) in {0, 1}
+    keep = proven or (accept_incumbent and usable)
+    diagnostics = _highs_diagnostics(res, rel_gap, abs_gap, maximize)
+    diagnostics["runtime"] = runtime
+    diagnostics["objective_upper_used"] = scale
+    if not keep:
         return {
             "status": int(res.status),
             "is_optimal": False,
@@ -210,14 +294,81 @@ def solve_assignment_highs(
             "y": {},
             "x": {},
             "workload": {},
+            **diagnostics,
         }
 
     x = res.x
+    y_values = {oid: float(x[idx_y[oid]]) for oid in order_ids}
+    stage_value = _stage_value(
+        stage, x, idx_y, idx_l, idx_u, idx_x, weight, tiers, must_ids, pickers, penalized_pairs
+    )
+    objective = stage_value if stage != "weighted" else float(-res.fun)
     return {
         "status": int(res.status),
         "is_optimal": True,
-        "objective": float(-res.fun),
-        "y": {oid: float(x[idx_y[oid]]) for oid in order_ids},
+        "objective": objective,
+        "stage_value": stage_value,
+        "y": y_values,
         "x": {pair: float(x[idx_x[pair]]) for pair in pairs},
         "workload": {pid: float(x[idx_w[pid]]) for pid in pickers},
+        **diagnostics,
+    }
+
+
+def _stage_value(
+    stage: str,
+    x,
+    idx_y: Dict[str, int],
+    idx_l: Dict[str, int],
+    idx_u: Dict[str, int],
+    idx_x: Dict[Tuple[str, str], int],
+    weight: Dict[str, float],
+    tiers: Dict[str, float],
+    must_ids: Sequence[str],
+    pickers: Sequence[str],
+    penalized_pairs: Sequence[Tuple[str, str]],
+) -> float:
+    """Natural-unit value of this stage, read off the solution."""
+    if stage == "must_count":
+        return float(sum(x[idx_y[oid]] for oid in must_ids))
+    if stage == "ordinary":
+        must_set = set(must_ids)
+        return float(sum(weight[oid] * x[idx_y[oid]] for oid in weight if oid not in must_set))
+    if stage == "lateness":
+        return float(sum(float(tiers.get(oid, 1.0)) * x[idx_l[oid]] for oid in idx_l))
+    if stage == "balance":
+        return float(sum(x[idx_u[pid]] for pid in pickers))
+    if stage == "jack":
+        return float(sum(x[idx_x[pair]] for pair in penalized_pairs if pair in idx_x))
+    return float(sum(weight[oid] * x[idx_y[oid]] for oid in weight))
+
+
+def _highs_diagnostics(res, rel_gap: float, abs_gap: Optional[float], maximize: bool) -> dict:
+    """Bound and gap in this stage's natural sense.
+
+    SciPy minimizes. ``mip_dual_bound`` is a lower bound on ``fun``. A
+    maximization stage reports the negation, so its bound is ``-dual``.
+    """
+    dual = getattr(res, "mip_dual_bound", None)
+    gap = getattr(res, "mip_gap", None)
+    fun = getattr(res, "fun", None)
+    abs_reached = None
+    bound = None
+    if dual is not None and fun is not None:
+        try:
+            dual_value = float(dual)
+            fun_value = float(fun)
+        except (TypeError, ValueError):
+            dual_value = None
+            fun_value = None
+        if dual_value is not None and fun_value is not None and math.isfinite(dual_value):
+            abs_reached = abs(fun_value - dual_value)
+            bound = -dual_value if maximize else dual_value
+    return {
+        "solver_bound": bound,
+        "solver_gap": None if gap is None else float(gap),
+        "solver_abs_gap": abs_reached,
+        "time_limit_hit": int(res.status) == 1,
+        "mip_rel_gap_used": float(rel_gap),
+        "mip_abs_gap_used": None if abs_gap is None else float(abs_gap),
     }

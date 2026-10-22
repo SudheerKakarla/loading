@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from assignment_reports import deadline_minutes
 from build_truck_loads import write_truck_loads
 from chunk_loads import ChunkSettings, chunk_loads, main, write_chunk_outputs
 from order_picking_optimizer import compute_priority_weight, route_orders
@@ -207,6 +208,56 @@ def test_soft_deadline_keeps_urgency_neutral_and_stores_the_cutoff():
     )
     assert result.orders.iloc[0]["cutoff_time"] == pytest.approx(60.0)
     assert result.orders.iloc[0]["priority_weight"] == pytest.approx(0.1)
+
+
+def test_cutoff_of_30_minutes_is_not_read_as_30_hours():
+    """A chunker cutoff of 30 is minutes. The stored weight must survive."""
+    result = chunk_loads(
+        _loads(
+            [
+                {
+                    "truck_id": "TRK1",
+                    "depot_id": "DEPOT",
+                    "item_id": "I1",
+                    "location_id": "L1",
+                    "weight": 10.0,
+                    "departure_time": 60.0,
+                }
+            ]
+        ),
+        _star("DEPOT", ["L1"]),
+        _settings(deadline_mode="soft", staging_buffer=30.0, reference_order_lines=10.0),
+    )
+    cutoff = result.orders.iloc[0]["cutoff_time"]
+    stored = result.orders.iloc[0]["priority_weight"]
+    assert cutoff == pytest.approx(30.0)
+    assert deadline_minutes(cutoff) == pytest.approx(30.0)
+    assert stored == pytest.approx(0.1)
+    kept = compute_priority_weight(result.orders)
+    assert float(kept.iloc[0]["priority_weight"]) == pytest.approx(stored)
+    blanked = result.orders.copy()
+    blanked["priority_weight"] = pd.NA
+    as_hours = compute_priority_weight(blanked)
+    assert float(as_hours.iloc[0]["priority_weight"]) == pytest.approx(1.0)
+
+
+def test_a_volume_cap_rejects_a_line_with_no_volume():
+    with pytest.raises(ValueError, match="missing volume"):
+        chunk_loads(
+            _loads(
+                [
+                    {
+                        "truck_id": "TRK1",
+                        "depot_id": "DEPOT",
+                        "item_id": "I1",
+                        "location_id": "L1",
+                        "weight": 10.0,
+                    }
+                ]
+            ),
+            _star("DEPOT", ["L1"]),
+            _settings(max_job_volume=1.0),
+        )
 
 
 def test_each_depot_gets_its_own_picker_folder(tmp_path: Path):

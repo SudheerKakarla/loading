@@ -199,6 +199,9 @@
   <a href="#milp">Assignment MILP</a>
   <a href="#objective">Objective</a>
   <a href="#constraints">Constraints</a>
+  <a href="#staged">Staged release</a>
+  <a href="#gap">Stopping gap</a>
+  <a href="#docks">Two docks</a>
   <a href="#example">Worked numbers</a>
   <a href="#config">Crew and wave settings</a>
   <a href="#outside">Outside this model</a>
@@ -212,8 +215,8 @@
 <div class="cards">
   <div class="card"><strong>Phase 1</strong>For each order, a closed walk from the depot you pass in, through that order’s distinct slots, and back.</div>
   <div class="card"><strong>Phase 2</strong>Which of those orders to release this wave, and which eligible picker does each one.</div>
-  <div class="card"><strong>Score</strong>Sum of priority weights of released orders, minus a penalty on uneven picker minutes.</div>
-  <div class="card"><strong>Always feasible</strong>Releasing nothing has objective \(0\). A tight shift shows up as orders left out, not as an infeasible model.</div>
+  <div class="card"><strong>Score</strong>Sum of priority weights of released orders, minus optional penalties. <code>--staged-assignment</code> reports that same release-weight sum.</div>
+  <div class="card"><strong>Feasible by default</strong>Releasing nothing has objective \(0\). A tight shift shows up as orders left out. <code>--require-must-ship</code> is infeasible when those jobs cannot all fit.</div>
 </div>
 <p>
   A typical order has about 6 to 15 lines. The routing problem for one order is that small set of slots plus the depot.
@@ -271,6 +274,12 @@ T_{ij}
   <tr><td>\(x_{or}\)</td><td>Binary, \(1\) if picker \(r\) does order \(o\). Created only for eligible pairs</td><td><code>assign</code></td></tr>
   <tr><td>\(\omega_r\)</td><td>Minutes of work assigned to picker \(r\)</td><td><code>workload</code></td></tr>
   <tr><td>\(u_r\)</td><td>Absolute gap between \(\omega_r\) and the average workload</td><td><code>imbalance</code></td></tr>
+  <tr><td>\(D_o\)</td><td>Cutoff of order \(o\), minutes from the wave start. A blank cell is no deadline</td><td><code>cutoff_time</code></td></tr>
+  <tr><td>\(s_r\)</td><td>Minute picker \(r\) starts. A missing clock is \(0\)</td><td><code>shift_start</code></td></tr>
+  <tr><td>\(L_o\)</td><td>Minutes order \(o\) finishes after \(D_o\). Never negative. An undated job is \(0\)</td><td><code>late</code></td></tr>
+  <tr><td>\(\pi_o\)</td><td>Lateness tier. \(100\) for a must-ship job, \(1\) otherwise</td><td><code>lateness_tier</code></td></tr>
+  <tr><td>\(\lambda\)</td><td>Weight on tiered lateness. Default \(0\)</td><td><code>--lateness-weight</code></td></tr>
+  <tr><td>\(\gamma\)</td><td>Penalty for a jack-eligible job given to a forklift. Default \(0\)</td><td><code>--prefer-jack</code></td></tr>
   <tr><td>\(H\)</td><td>Length of one wave in hours. Default \(8\)</td><td><code>wave_hours</code></td></tr>
 </table>
 
@@ -555,6 +564,8 @@ V_o \le V_r^{\max} \text{ when both volumes are present}
 <p>
   If \(E\) contains no picker for order \(o\), then \(y_o\) is forced to \(0\). The result tags that order <code>no_eligible_picker</code>.
   An order that is eligible but left at \(y_o = 0\) is tagged <code>shift_time_limit_or_priority_tradeoff</code>.
+  <code>--withhold-if-late-at-start</code> (default off) removes a job before the solve when its duration exceeds the window every eligible picker still has before the cutoff. That reason is <code>cannot_meet_cutoff</code>.
+  The window is \(A_r(D_o) = \min(\max(0, D_o - s_r), S_r)\). Jobs removed here are not forced on by <code>--require-must-ship</code>.
 </p>
 
 <h2 id="milp">Assignment MILP</h2>
@@ -601,11 +612,47 @@ x_{or} \in \{0,1\} \quad \forall (o,r) \in E
 <p>
   and returns the negation of that optimal value, so both solvers report the same score.
   With the default \(\beta = 0\) the imbalance variables stay in the model and drop out of the score.
-  <code>--lateness-weight</code> and <code>--prefer-jack</code> default to 0, so they add nothing to this objective.
-  A positive lateness weight subtracts tier times minutes late, with each picker sequenced by earliest deadline and <code>cutoff_time</code> read as minutes from the shift start. The must-ship tier is 100 and an ordinary job's tier is 1. The release weight, including the flat 100000, stays in the sum above.
-  A positive jack penalty subtracts that amount, in the same units as \(w_o\), for each jack-eligible job given to a forklift.
   The command-line flag <code>--share-shift</code> sets \(\beta = 0.001\). One ordinary order, weight \(1\), is worth \(1000\) minutes of unevenness, so an order that still fits is not dropped to even the shift.
   Setting every \(w_o = 1\) makes the score a count of released orders.
+</p>
+<p>
+  Two optional penalties use the same units as \(w_o\). Both default to \(0\).
+  \(J\) is the set of pairs where the job is eligible for a pallet jack and the picker is a forklift.
+</p>
+<div class="formula">
+\[
+\max
+\sum_{o \in O} w_o\, y_o
+- \beta \sum_{r \in R} u_r
+- \lambda \sum_{o \in O} \pi_o L_o
+- \gamma \sum_{(o,r) \in J} x_{or}
+\]
+</div>
+<p>
+  \(\lambda\) is <code>--lateness-weight</code>. \(\gamma\) is <code>--prefer-jack</code>.
+  Finish times follow earliest-deadline order on each picker, starting at minute \(0\). Undated jobs go last and are not late.
+  \(D_o\) is minutes from that start. The release weight, including the flat \(100000\), stays in the first sum.
+  On this weighted sum, keep \(\gamma\) below the smallest job weight so a tie moves toward a jack and the job stays released.
+  Under <code>--staged-assignment</code> any positive \(\gamma\) minimises the count of pairs in \(J\) with coefficient \(1\).
+</p>
+<p><strong>Finish time and lateness,</strong> present when \(\lambda &gt; 0\) on this weighted solve, and on the lateness stage below.</p>
+<div class="formula">
+\[
+C_o \ge \sum_{o' \preceq o} \tau_{o'}\, x_{o'r} - M(1 - x_{or})
+\qquad \forall (o,r) \in E
+\]
+</div>
+<div class="formula">
+\[
+L_o \ge C_o - D_o - M^{\mathrm{late}}(1 - y_o),
+\qquad L_o \ge 0
+\]
+</div>
+<p>
+  The sum is the durations of order \(o\) and of the jobs that deadline order places before it on picker \(r\).
+  \(M\) is the longest shift. \(M^{\mathrm{late}} = M + \max(0, -\min D)\).
+  HiGHS writes the finish row as \(C_o - \text{prefix} - M x_{or} \ge -M\).
+  Dropped jobs are not charged lateness.
 </p>
 <div class="ex">
   One picker, shift \(10\). Order BIG has \(\tau = 9\), \(w = 5\). Orders SMALL1 and SMALL2 have \(\tau = 4\), \(w = 1\) each.
@@ -662,6 +709,99 @@ u_r \ge \bar\omega - \omega_r
   Both are the pair of inequalities above.
 </p>
 
+<h2 id="staged">Staged release</h2>
+<p class="lede">
+  <code>--staged-assignment</code> is off by default. The weighted sum above stays the live objective.
+  The flag replaces that one sum with five stages. Each stage locks the objective value it reached, with tolerance \(10^{-6}\), so a later stage may swap jobs of equal value.
+  The lock uses that incumbent. The public score is still the release-weight sum of the jobs that remain.
+</p>
+<ol class="eq">
+  <li>Maximise the count of must-ship jobs. The absolute stop is \(0.5\). The stage is skipped when the wave has none.</li>
+  <li>Maximise \(\sum w_o y_o\) over the other jobs. Must-ship weights stay out of this sum, so equal \(100000\) jobs can still swap under the count lock. When the work exceeds the shift, weights decide which ordinary jobs stay out.</li>
+  <li>Minimise \(\sum \pi_o L_o\) on the released set, including when \(\lambda = 0\). No deadlines makes this stage a no-op.</li>
+  <li>Minimise \(\sum u_r\), only when \(\beta &gt; 0\).</li>
+  <li>Minimise the count of pairs in \(J\), only when \(\gamma &gt; 0\). The coefficient is \(1\), so the flag tie-breaks after release.</li>
+</ol>
+<p>
+  A stage that hits the time limit keeps its incumbent, and the next lock can sit short of the true maximum.
+  <code>--require-must-ship</code> is a separate constraint \(y_o = 1\) on every must-ship job. It is not this staged mode.
+  When those jobs cannot all fit, <code>is_optimal</code> is false, <code>infeasible_must_ship</code> is true, and <code>status_reason</code> is <code>required_must_ship_jobs_cannot_all_fit</code>.
+  The printed line is “Required must-ship jobs cannot all fit.”
+  A plan that releases nothing without that flag stays feasible.
+  Staged assignment leaves a must-ship job out when it does not fit and still returns a plan.
+</p>
+<div class="ex">
+  One picker, shift \(100\). J1 has cutoff \(10\), duration \(8\), weight \(2\). J2 has cutoff \(12\), duration \(8\), weight \(2\).
+  With \(\lambda = 1\), both jobs score \(0\) once lateness is charged, and one job scores \(2\).
+  The weighted path releases one job. The staged path releases both and reports \(4\) late minutes. The public score is \(4\).
+</div>
+<div class="ex">
+  On the 16-truck wave, lateness weight \(1\) and a \(60\) second stage limit, <code>--prefer-jack 0.1</code> only turns on stage 5.
+  PACK_A stayed \(84\) of \(84\), score \(400424.4\). PACK_B stayed \(87\) of \(87\), score \(700414\). Late minutes stayed \(0\). The jack count proved at \(0\).
+  Twelve forklift-only jobs stayed on forklifts. Each dock stayed inside \(480\) minutes. Across both docks PJ04 is \(506.5\) and PJ08 is \(504.7\), so the minute sum raises.
+  Reports are <code>outputs/chunk_assign/gap_wave/staged_prefer_jack/</code>. The default stays \(\gamma = 0\).
+</div>
+
+<h2 id="gap">Stopping gap</h2>
+<p class="lede">
+  The stop is an absolute tolerance of a tenth of the smallest positive weight, raised above solver noise when that still sits below half a job.
+  A caller <code>mip_gap</code> is stored as <code>gap_requested</code> and does not loosen the solve.
+</p>
+<div class="formula">
+\[
+w_{\min} = \min \{ w_o : w_o &gt; 0 \}
+\qquad
+\text{target} = 0.1\, w_{\min}
+\qquad
+\text{noise} = 10^{-6}\, U
+\]
+</div>
+<div class="formula">
+\[
+\text{absolute} =
+\begin{cases}
+\text{target} &amp; \text{if noise} \ge w_{\min} \\
+\min\bigl(\max(\text{target},\, 10 \cdot \text{noise}),\, 0.5\, w_{\min}\bigr) &amp; \text{otherwise}
+\end{cases}
+\]
+</div>
+<p>
+  \(U\) is an upper bound on the objective. The sum of the absolute coefficients is not that bound once lateness or imbalance is continuous.
+  On the weighted objective, \(U\) is the sum of the positive release weights, plus \(|\beta|\) times twice the shift lengths, plus \(|\lambda|\) times \(\sum \pi_o M^{\mathrm{late}}\) over dated jobs, plus \(|\gamma|\) times the number of pairs in \(J\).
+  Twice the shift lengths bounds the sum of absolute deviations from the mean.
+  The ordinary stage uses only the ordinary weights, so a \(100000\) coefficient is outside that stage’s scale.
+  The must-ship count stage stops at an absolute gap of \(0.5\). The jack stage uses the smaller of \(0.5\) and the weight tolerance.
+</p>
+<p>
+  SciPy’s MILP wrapper accepts <code>mip_rel_gap</code> only, so HiGHS is given <code>mip_rel_gap = absolute / max(U, 1)</code>.
+  Gurobi is given <code>MIPGap = 0</code> and <code>MIPGapAbs</code> equal to the absolute tolerance, because Gurobi stops when either gap is met.
+  Each solve records <code>stop</code>: <code>time_limit</code> when the limit hit, <code>no_solution</code> when no usable plan was returned, <code>proven</code> when the achieved absolute gap is within \(10^{-6}\) or within \(1\%\) of the target, and <code>gap_reached</code> otherwise.
+  A staged result uses <code>time_limit</code> if any stage hit the limit, and otherwise the last stage’s stop.
+  The weighted path discards a solve that is not usable. A staged plan keeps a time-limit incumbent.
+</p>
+<div class="ex">
+  On 2026-10-21 the 16-truck wave was solved again with \(\lambda = 1\) and a \(60\) second limit on each stage.
+  Reports are under <code>outputs/chunk_assign/gap_wave/weighted/</code> and <code>outputs/chunk_assign/gap_wave/staged/</code>.
+  Both paths released all \(84\) PACK_A jobs and all \(87\) PACK_B jobs, including <code>TRK02-J02</code>, <code>TRK14-J09</code>, <code>TRK14-J15</code>, <code>TRK16-J01</code>, and <code>TRK16-J03</code>.
+  Late minutes were \(0\). Every stage stopped <code>proven</code> with achieved absolute gap \(0\).
+  Weighted PACK_B finished in \(1.47\) seconds. Its absolute stop was \(1.6\) on an upper bound of \(1{,}074{,}814\), and the objective was \(700414\), the full release weight.
+  Staged PACK_B ordinary finished in \(0.02\) seconds. Its absolute stop was \(0.32\) on an upper bound of \(414\).
+  The shared-crew minute sum passed. The weighted path can still drop a job when lateness costs more than its weight.
+</div>
+
+<h2 id="docks">Two docks</h2>
+<p>
+  Each picker call takes one <code>depot_id</code> and sees every picker in the file.
+  <code>python source/run_docks.py</code> solves each depot folder, writes that dock’s utilisation from <code>shift_duration</code>, then sums busy minutes and compares the sum with that shift.
+  A picker more than \(0.0001\) minute past the shift raises. The 2026-10-21 prefer-jack plan is that case: PJ04 at \(506.5\) minutes and PJ08 at \(504.7\), against \(480\).
+  A pass is the minute total. Clock overlap, and the \(1.1\)-minute walk between docks \(72\) m apart at speed \(65\), stay outside the screen. The check does not rebuild the assignment.
+  Files that were already written can be checked with <code>python source/assignment_reports.py</code> and one <code>utilisation.csv</code> per dock.
+</p>
+<pre><code>python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inputs/layout_warehouse/pickers.csv --travel inputs/layout_warehouse/travel_times.csv --out outputs/chunk_assign/docks --lateness-weight 1 --time-limit 60</code></pre>
+<p class="note">
+  Add <code>--staged-assignment</code> for the five-stage release. The single-dock optimizer is still <code>python source/order_picking_optimizer.py</code> with one <code>--depot</code>.
+</p>
+
 <h2 id="example">Worked numbers from the two-aisle map</h2>
 <p>
   These rows are <code>order_picking/inputs/layout_small/</code>. Aisles at \(x = 0\) and \(x = 4\), both from \(y = 0\) to \(y = 10\). Cross-aisles at \(y = 0\) and \(y = 10\).
@@ -698,7 +838,8 @@ u_r \ge \bar\omega - \omega_r
   <li>Batching several orders into one walk, zone picking, and a second location for the same item.</li>
   <li>A \(z\) edge or a separate stop for the left and right rack. Upper levels and awkward slots are \(r_j\).</li>
   <li>Item handling inside \(T_{ij}\). That handling is \(p_o\).</li>
-  <li>A lexicographic rule that must finish every higher weight before any lower weight. Must-ship is the finite weight \(10^{5}\) inside the same sum.</li>
+  <li>A ranking that clears every higher weight before any lower weight. <code>--staged-assignment</code> is must-ship count, then the other jobs by weight, then lateness. The default remains one weighted sum, and must-ship stays the finite weight \(10^{5}\) inside that sum.</li>
+  <li>One model that assigns both docks together, a loading sequence, a cap on pallets waiting at the dock, aisle congestion, a stock check, and a mid-shift re-plan. <code>run_docks.py</code> sums busy minutes after the two solves. A pass is that total.</li>
 </ul>
 
 <h2 id="plots">How to visualize</h2>
@@ -839,8 +980,11 @@ plot_shift_gantt(result, pickers, out="gantt.png")</code></pre>
   <tr><td>\(u(h)\), \(u(q)\), \(w_o\)</td><td><code>compute_priority_weight</code> in <code>order_picking/source/order_picking_optimizer.py</code></td></tr>
   <tr><td>One-slot \(\tau_o\), \(p_o\), nearest neighbor, \(\Delta(i,j)\)</td><td><code>route_order</code> and <code>tsp_open_solvers.py</code></td></tr>
   <tr><td>Directed tour: out-degree 1, in-degree 1, leave-\(S\) cut</td><td><code>solve_directed_scip</code> and <code>solve_directed_highs</code> in <code>tsp_open_solvers.py</code>. <code>solve_scip</code> and <code>solve_highs</code> stay the undirected city demo</td></tr>
-  <tr><td>Maximization of \(\sum w_o y_o - \beta \sum u_r\)</td><td><code>_solve_assignment_gurobi</code></td></tr>
-  <tr><td>The same model minimized with negated weights</td><td><code>order_picking/source/order_picking_highs.py</code></td></tr>
+  <tr><td>Maximization of \(\sum w_o y_o - \beta \sum u_r - \lambda \sum \pi_o L_o - \gamma \sum_J x_{or}\)</td><td><code>_solve_assignment_gurobi</code></td></tr>
+  <tr><td>The same model minimized with negated weights, and the relative-gap denominator \(U\)</td><td><code>order_picking/source/order_picking_highs.py</code></td></tr>
+  <tr><td>Tenth-of-a-job stop, <code>stop</code>, and the minute-sum screen</td><td><code>order_picking/source/assignment_reports.py</code></td></tr>
+  <tr><td>Staged release and <code>--require-must-ship</code></td><td><code>solve_order_assignment</code> in <code>order_picking/source/order_picking_optimizer.py</code></td></tr>
+  <tr><td>Both docks, then the minute-sum screen</td><td><code>order_picking/source/run_docks.py</code></td></tr>
   <tr><td>Prose form of constraints C1–C9</td><td><code>order_picking/source/order_picking_planning_optimizer_spec.md</code></td></tr>
   <tr><td>Route arrows, the floor picture, the shift Gantt, and the two HTML pages</td><td><code>order_picking/visualizer/plot_picking.py</code> and <code>order_picking/visualizer/html_picking.py</code> (<code>order_picking/visualizer/warehouse.html</code>, <code>assignment.html</code>). The walk geometry is <code>route_legs</code> in <code>build_travel_matrix.py</code></td></tr>
 </table>
@@ -848,7 +992,7 @@ plot_shift_gantt(result, pickers, out="gantt.png")</code></pre>
 </main>
 </div>
 <footer>
-  Order picking model. Travel times in minutes when speed is distance per minute. Phase 2 default solver is HiGHS.
+  Order picking model. Travel times in minutes when speed is distance per minute. Phase 2 default solver is HiGHS. The stop is a tenth of the smallest positive weight. A dock pass is the summed busy minutes. Updated 2026-10-21.
 </footer>
 </body>
 </html>

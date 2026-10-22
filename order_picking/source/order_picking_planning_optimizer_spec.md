@@ -1,6 +1,6 @@
 # Order Picking Planning Optimizer
 
-This is the picker specification the optimizer implements. An earlier design draft that was not shipped is `planning_optimizer_spec_draft_v0.2.md`. The truck-to-job equations are `../chunker/formulation.md`.
+This is the picker specification the optimizer implements. Draft v0.2 is history (`planning_optimizer_spec_draft_v0.2.md`). The corrections to that draft are `planning_optimizer_spec_v0.3.md`. The truck-to-job equations are `../chunker/formulation.md`.
 
 ## Overview
 
@@ -24,9 +24,21 @@ Primary objective: Maximize the weighted sum of orders fulfilled within the shif
 
 Secondary objective: Minimize the imbalance of workload (total picking time) across pickers, weighted against the primary objective.
 
-Priority handling for this objective is a weighted-sum (linear) scheme, not a strict lexicographic rule: the model may choose to leave a higher-weight order unfulfilled if fulfilling several lower-weight orders instead produces a better total weighted score. A separate "must-ship" case can still be represented within this same linear objective by assigning such an order a sufficiently large finite weight, rather than by introducing a hard lexicographic constraint.
+The default objective is one weighted sum. It may leave a higher-weight order unfulfilled when several lower-weight orders produce a better total. A must-ship order is a large finite `priority_weight` (100000) inside that same sum.
 
-Note on feasibility: this assignment model is always feasible. Leaving every order unfulfilled is a trivially valid solution, so there is no scenario analogous to a hard infeasible case; constraint pressure instead shows up as a lower achieved objective value and a larger `orders_not_fulfilled` list.
+`--staged-assignment` replaces that sum with five stages, in order:
+
+1. Maximise the count of must-ship jobs. The absolute stop is 0.5. The stage is skipped when the wave has none.
+2. Maximise the weighted sum of the other jobs, subject to eligibility and the shift. When the work exceeds the crew's minutes, weights decide which jobs stay out. This stage does not force every carryable job on.
+3. Minimise lateness on the released set (tier 100 for must-ship, tier 1 otherwise), including when `lateness_weight` is 0. No deadlines makes this stage a no-op.
+4. Minimise workload imbalance, only when `balance_weight` > 0.
+5. Minimise the count of jack-eligible jobs given to a forklift, only when `prefer_jack` > 0. The coefficient is 1, so the flag tie-breaks after release.
+
+Each stage locks the objective value it reached, with tolerance 1e-6, so a later stage may swap jobs of equal value. The lock uses that incumbent. A stage that hits the time limit records its gap, and the lock can then sit short of the true maximum. The public score of a staged plan is the release-weight sum of the jobs that remain. `require_must_ship` is a separate hard constraint (`y = 1`) and can return an empty plan. It is not this staged mode. When both are set, jobs removed by `--withhold-if-late-at-start` are not forced on.
+
+The solve stops at an absolute tolerance of a tenth of the smallest positive weight, raised above solver noise when that still sits below half a job. Noise is about `1e-6` times an upper bound on the objective. When that noise is already larger than one job, the tenth-of-a-job target is kept: the blended objective cannot certify a tighter stop, and the ordinary stage can, because its scale is the ordinary weights. `mip_gap` from the caller is stored as `gap_requested` and does not loosen that stop. SciPy's MILP wrapper accepts `mip_rel_gap` only, so HiGHS is given `mip_rel_gap = absolute / max(objective_upper, 1)`. `objective_upper` bounds the objective. The sum of the absolute coefficients does not, once lateness or imbalance is continuous. The balance bound is twice the sum of the shift lengths, which covers the sum of absolute deviations from the mean. Gurobi is given `MIPGap = 0` and `MIPGapAbs` equal to the absolute tolerance, because Gurobi stops when either gap is met. The must-ship count stage uses an absolute stop of 0.5. The jack stage uses the smaller of 0.5 and the weight tolerance. Each solve records `stop`: `time_limit` when the limit hit, `no_solution` when no usable plan was returned, `proven` when the achieved absolute gap is within `1e-6` or within 1% of the target, and `gap_reached` otherwise. A staged result uses `time_limit` if any stage hit the limit, and otherwise the last stage's stop.
+
+Note on feasibility: the default weighted model is always feasible, because leaving every order unfulfilled is a valid solution. Pressure shows up as a lower objective and a larger `orders_not_fulfilled` list. `require_must_ship` can make that model infeasible when the required must-ship jobs cannot all fit the shift. That result has `is_optimal` false, `infeasible_must_ship` true, and `status_reason` `required_must_ship_jobs_cannot_all_fit`. A plan that releases nothing without that flag stays feasible. Staged assignment leaves a must-ship job out when it does not fit and still returns a plan.
 
 ## Constraints
 
@@ -52,7 +64,7 @@ Within phase 1, each item in an order is assumed to be located at a single, fixe
 Each order typically involves 6 to 15 distinct items/locations, which bounds the size of the per-order routing problem solved in phase 1.
 
 ### C8: Priority Weighting (Weighted Objective, Not Strict Priority)
-Each order carries a `priority_weight`. The optimizer maximizes the total weighted sum of fulfilled orders rather than a simple count. An equal-weight configuration (`priority_weight = 1` for all orders, equivalently `benchmark_mode = true`) is retained as a benchmark that recovers plain count-maximization. Strict lexicographic prioritization is out of scope. A must-ship order is a large finite weight (`must_ship` sets 100000, which stays below the 1e6 coefficient range).
+Each order carries a `priority_weight`. The default optimizer maximizes the total weighted sum of fulfilled orders. An equal-weight configuration (`priority_weight = 1` for all orders, equivalently `benchmark_mode = true`) is retained as a benchmark that recovers plain count-maximization. A must-ship order is a large finite weight (`must_ship` sets 100000, which stays below the 1e6 coefficient range). Lexicographic release is the `--staged-assignment` flag described under Objective. The weighted sum remains the default.
 
 Derivation, applied only when the row has no finite `priority_weight` (`compute_priority_weight`):
 
@@ -126,6 +138,9 @@ DataFrame containing the pickers available for the shift.
 - wave_hours (float, default 8): Length of one pick wave, in hours.
 - tier_multipliers (dict, optional): Replaces the default account-tier table. Keys are tier names.
 - verbose (boolean, default false): When true, `solve_order_picking` prints `format_picking_solution`.
+- staged_assignment (boolean, default false): The five-stage release described under Objective. CLI: `--staged-assignment`.
+- withhold_if_late_at_start (boolean, default false): Before the solve, drop a job whose duration exceeds `A_r(T) = min(max(0, T - s_r), shift_duration_r)` for every eligible picker. `T` is the job cutoff in minutes, `s_r` is `shift_start` (0 when the column is absent), and the shift length is `shift_duration`. The reason is `cannot_meet_cutoff`. A job with no eligible picker keeps `no_eligible_picker`. CLI: `--withhold-if-late-at-start`.
+- mip_gap (float, optional): Stored on the result as `gap_requested`. The stop is the absolute tolerance in the Objective section, on the weighted path and on every staged stage.
 
 ## Output
 
@@ -139,17 +154,20 @@ DataFrame containing the pickers available for the shift.
 - Fields:
   - status (int): Backend status code. Gurobi's optimal code is 2. HiGHS via SciPy uses 0 for optimal.
   - solver (string): "gurobi" or "highs", the phase 2 backend that produced this result
-  - is_optimal (boolean): Whether an optimal solution was found
-  - objective_value (float or None): Weighted objective value if optimal, None otherwise
+  - is_optimal (boolean): Whether a usable solution was found. A staged plan that hit a time limit is still returned, and `time_limit_hit` records that a lock may be short of the true maximum. The weighted path discards a non-optimal solve.
+  - objective_value (float or None): Weighted objective when the default path is optimal. On the staged path this is the release-weight sum of fulfilled jobs. None when the solve is not usable.
   - orders_fulfilled (list): Order IDs that were fulfilled
-  - orders_not_fulfilled (list): Order IDs that were not fulfilled, each with a reason ("no_eligible_picker" if no picker is compatible under C2/C4, or "shift_time_limit_or_priority_tradeoff" if the order was feasible for at least one picker but not selected by the optimal weighted assignment)
+  - orders_not_fulfilled (list): Each item is `{order_id, reason}`. Reasons are `no_eligible_picker` (no picker is compatible under C2/C4), `shift_time_limit_or_priority_tradeoff` (a picker could take the order, and the weighted assignment left it out), and `cannot_meet_cutoff` (the withhold switch removed it before the solve).
+  - solver_bound, solver_gap, solver_abs_gap, time_limit_hit, mip_rel_gap_used, mip_abs_gap_used, objective_upper_used, runtime, stop: the last solve's bound, relative gap, absolute gap, time-limit flag, the gap settings that were applied, the objective upper bound used as the HiGHS denominator, seconds, and `stop` (`proven`, `gap_reached`, `time_limit`, or `no_solution`). `gap_requested` is the caller value.
+  - status_reason (string, only when `require_must_ship` returns no plan): `required_must_ship_jobs_cannot_all_fit`.
+  - stages (list, staged path only): One row per stage with status, incumbent, bound, absolute gap, relative gap, runtime, time-limit hit, the gap settings used, `objective_upper_used`, and `stop`. `--report-dir` writes these rows to `stages.csv`.
   - picker_assignments (dict): Mapping of picker_id to list of assigned order_ids
   - picker_workload (dict): Mapping of picker_id to total assigned picking time
   - order_priority_weight (dict): Mapping of fulfilled order_id to the `priority_weight` used in the objective, provided for downstream use (for example, as the input weight for pallets of that order in a separate downstream loading optimizer). This project does not perform that downstream loading step; it only produces this value as a handoff.
 - The combined end-to-end result additionally includes a `routes` key holding the full Phase 1 Output (above) for every order, keyed by order_id.
 
 ### Print Output
-`format_picking_solution(result)` returns the display text: orders fulfilled versus total orders, weighted score, picker assignments, each picker's workload, and the max-minus-min workload spread. `solve_order_picking(..., verbose=True)` prints that text. A non-optimal solve prints the score as "not optimal".
+`format_picking_solution(result)` returns the display text: orders fulfilled versus total orders, weighted score, picker assignments, each picker's workload, the max-minus-min workload spread, and, when the solve recorded them, solver status, bound, and gap. A staged solve adds one line per stage. `solve_order_picking(..., verbose=True)` prints that text. A non-optimal solve prints the score as "not optimal".
 
 ## Test Scenarios
 
@@ -258,7 +276,9 @@ DataFrame containing the pickers available for the shift.
 - Stochastic or dynamic order arrival during the shift
 - Picker-specific speed variation, fatigue, or learning effects
 - Real-time replanning once the shift has started
-- Strict lexicographic order priority (always fulfilling higher-priority orders first regardless of total throughput impact); a "must-ship" order is instead modeled as a very large finite `priority_weight` within the same linear objective
+- Making lexicographic release the default. The weighted sum stays the default. `--staged-assignment` is the opt-in release-then-lateness mode.
+- A joint model of both docks. `python source/run_docks.py` solves each depot folder on its own, writes that dock's reports, then `require_shared_crew` sums each picker's busy minutes and compares the sum with `shift_duration`. The 2026-10-21 prefer-jack plan raises on that sum: PJ04 at 506.5 minutes and PJ08 at 504.7, against a 480-minute shift. A pass is the minute total. Clock overlap and the walk between docks stay outside the screen. It does not rebuild the assignment.
+- Loading order (back of the truck first), a cap on pallets waiting at the dock, aisle congestion, a stock check, and a mid-shift re-plan.
 - Rebuilding the travel-time matrix inside a pick-wave solve. `build_travel_matrix.py` does that offline; Phase 1 only looks up the finished matrix (C9)
 - Per-item retrieval time inside the travel matrix. A visit's handling time is the order line's `pick_time`
 - A z coordinate or a lift-travel edge in the walk graph. Upper-level effort is the slot's `retrieval_time`

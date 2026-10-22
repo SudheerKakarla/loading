@@ -6,16 +6,21 @@ import pandas as pd
 import pytest
 
 from assignment_reports import (
+    absolute_gap,
     deadline_minutes,
     drop_detail,
     edd_sequence,
     parse_scenarios,
+    reachable_absolute_gap,
     remove_pickers,
+    require_shared_crew,
     schedule_lateness,
     shift_deadlines,
+    stop_reason,
     utilisation_rows,
 )
-from order_picking_optimizer import solve_order_assignment
+from assignment_reports import main as crew_main
+from order_picking_optimizer import format_picking_solution, solve_order_assignment
 
 
 def test_edd_puts_undated_jobs_last_and_breaks_ties_by_id():
@@ -224,6 +229,8 @@ def test_require_must_ship_is_infeasible_when_the_job_exceeds_the_shift():
     )
     assert forced["is_optimal"] is False
     assert forced.get("infeasible_must_ship") is True
+    assert forced["status_reason"] == "required_must_ship_jobs_cannot_all_fit"
+    assert "cannot all fit" in format_picking_solution(forced)
     optional = solve_order_assignment(orders, pickers, {"MUST": 50.0}, time_limit=10.0)
     assert optional["is_optimal"] is True
     assert optional["orders_fulfilled"] == []
@@ -284,3 +291,358 @@ def test_gurobi_matches_highs_on_the_jack_penalty():
     )
     assert gurobi["picker_assignments"]["J"] == highs["picker_assignments"]["J"]
     assert gurobi["objective_value"] == pytest.approx(highs["objective_value"])
+
+
+def _one_picker(shift: float, shift_start: float = 0.0) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "picker_id": "P1",
+                "equipment_type": "pallet_jack",
+                "max_weight": 50.0,
+                "shift_duration": shift,
+                "shift_start": shift_start,
+            }
+        ]
+    )
+
+
+def test_shared_crew_flags_only_a_real_overage():
+    over = [
+        pd.DataFrame([{"picker_id": "FK02", "busy_minutes": 300.0, "available_minutes": 480.0}]),
+        pd.DataFrame([{"picker_id": "FK02", "busy_minutes": 200.0, "available_minutes": 480.0}]),
+    ]
+    with pytest.raises(ValueError, match="FK02"):
+        require_shared_crew(over)
+    require_shared_crew(
+        [
+            pd.DataFrame([{"picker_id": "FK02", "busy_minutes": 200.0, "available_minutes": 480.0}]),
+            pd.DataFrame([{"picker_id": "FK02", "busy_minutes": 200.0, "available_minutes": 480.0}]),
+        ]
+    )
+    require_shared_crew(
+        [
+            pd.DataFrame([{"picker_id": "FK02", "busy_minutes": 240.0, "available_minutes": 480.0}]),
+            pd.DataFrame([{"picker_id": "FK02", "busy_minutes": 240.0 + 1e-6, "available_minutes": 480.0}]),
+        ]
+    )
+
+
+def test_shared_crew_cli_reads_two_utilisation_files(tmp_path):
+    within = [
+        {"picker_id": "P", "busy_minutes": 100.0, "available_minutes": 480.0},
+    ]
+    first = tmp_path / "a.csv"
+    second = tmp_path / "b.csv"
+    third = tmp_path / "c.csv"
+    pd.DataFrame(within).to_csv(first, index=False)
+    pd.DataFrame(within).to_csv(second, index=False)
+    crew_main([str(first), str(second)])
+    pd.DataFrame(
+        [{"picker_id": "P", "busy_minutes": 400.0, "available_minutes": 480.0}]
+    ).to_csv(third, index=False)
+    with pytest.raises(ValueError, match="P "):
+        crew_main([str(first), str(third)])
+
+
+def test_withhold_uses_the_available_window_not_the_raw_cutoff():
+    """Duration 20 fits a cutoff of 30, but not a picker who starts at minute 15."""
+    orders = pd.DataFrame(
+        [{"order_id": "LATE", "total_weight": 1.0, "priority_weight": 2.0, "cutoff_time": 30.0}]
+    )
+    pickers = _one_picker(480.0, shift_start=15.0)
+    withheld = solve_order_assignment(
+        orders,
+        pickers,
+        {"LATE": 20.0},
+        withhold_if_late_at_start=True,
+        time_limit=10.0,
+    )
+    assert withheld["orders_not_fulfilled"] == [
+        {"order_id": "LATE", "reason": "cannot_meet_cutoff"}
+    ]
+    assert withheld["drops"] == [
+        {"order_id": "LATE", "reason": "cannot_meet_cutoff", "detail": "cannot_meet_cutoff"}
+    ]
+    assert withheld["orders_fulfilled"] == []
+    kept = solve_order_assignment(orders, pickers, {"LATE": 20.0}, time_limit=10.0)
+    assert kept["orders_fulfilled"] == ["LATE"]
+
+    on_time = solve_order_assignment(
+        pd.DataFrame(
+            [{"order_id": "OK", "total_weight": 1.0, "priority_weight": 2.0, "cutoff_time": 20.0}]
+        ),
+        _one_picker(480.0),
+        {"OK": 20.0},
+        withhold_if_late_at_start=True,
+        time_limit=10.0,
+    )
+    assert on_time["orders_fulfilled"] == ["OK"]
+
+    blocked = solve_order_assignment(
+        pd.DataFrame(
+            [
+                {
+                    "order_id": "HEAVY",
+                    "total_weight": 1.0,
+                    "priority_weight": 2.0,
+                    "cutoff_time": 10.0,
+                    "required_equipment": "forklift",
+                }
+            ]
+        ),
+        _one_picker(480.0),
+        {"HEAVY": 50.0},
+        withhold_if_late_at_start=True,
+        time_limit=10.0,
+    )
+    assert blocked["orders_not_fulfilled"] == [
+        {"order_id": "HEAVY", "reason": "no_eligible_picker"}
+    ]
+
+
+def test_withhold_runs_before_a_must_ship_force():
+    orders = pd.DataFrame(
+        [
+            {
+                "order_id": "MUST",
+                "total_weight": 1.0,
+                "priority_weight": 100000.0,
+                "must_ship": "true",
+                "cutoff_time": 10.0,
+            }
+        ]
+    )
+    result = solve_order_assignment(
+        orders,
+        _one_picker(100.0),
+        {"MUST": 50.0},
+        require_must_ship=True,
+        withhold_if_late_at_start=True,
+        time_limit=10.0,
+    )
+    assert result["is_optimal"] is True
+    assert result.get("infeasible_must_ship") is not True
+    assert result["drops"][0]["detail"] == "cannot_meet_cutoff"
+
+
+def _release_wave():
+    rows = [
+        {
+            "order_id": "MUST",
+            "total_weight": 1.0,
+            "priority_weight": 100000.0,
+            "must_ship": "true",
+            "cutoff_time": 10000.0,
+        }
+    ]
+    rows.extend(
+        {
+            "order_id": f"J{index:02d}",
+            "total_weight": 1.0,
+            "priority_weight": 2.0,
+            "cutoff_time": 10000.0,
+        }
+        for index in range(1, 21)
+    )
+    orders = pd.DataFrame(rows)
+    durations = {row["order_id"]: 1.0 for row in rows}
+    pickers = _one_picker(1000.0)
+    return orders, pickers, durations
+
+
+def test_reachable_gap_sits_above_noise_and_below_one_job():
+    """Noise on a huge objective lifts the stop, and never past half a job."""
+    assert reachable_absolute_gap([4.0, 100000.0], 1.0e6) == pytest.approx(2.0)
+    assert reachable_absolute_gap([0.4], 1.0e6) == pytest.approx(0.04)
+    assert reachable_absolute_gap([2.0] * 20, 40.0) == pytest.approx(absolute_gap([2.0]))
+    assert stop_reason(True, True, 0.0, 0.2) == "time_limit"
+    assert stop_reason(False, False, None, 0.2) == "no_solution"
+    assert stop_reason(False, True, 1e-8, 0.2) == "proven"
+    assert stop_reason(False, True, 0.2, 0.2) == "gap_reached"
+
+
+def _assert_encoded_gap(result, smallest_weight: float) -> None:
+    """The caller gap is stored, and the relative stop uses the objective upper bound."""
+    assert result["gap_requested"] == pytest.approx(0.05)
+    assert result["mip_abs_gap_used"] is not None
+    assert result["mip_abs_gap_used"] < smallest_weight
+    upper = float(result["objective_upper_used"])
+    assert upper >= 1.0
+    if result["solver"] == "gurobi":
+        assert result["mip_rel_gap_used"] == pytest.approx(0.0)
+    else:
+        assert result["mip_rel_gap_used"] == pytest.approx(result["mip_abs_gap_used"] / upper)
+    text = format_picking_solution(result)
+    assert "Solver status:" in text
+    assert "Bound:" in text
+
+
+def test_staged_release_ignores_a_five_percent_gap_and_keeps_every_job():
+    orders, pickers, durations = _release_wave()
+    for solver in ("highs", "gurobi"):
+        staged = solve_order_assignment(
+            orders,
+            pickers,
+            durations,
+            lateness_weight=1.0,
+            mip_gap=0.05,
+            staged_assignment=True,
+            assignment_solver=solver,
+            time_limit=10.0,
+        )
+        assert staged["is_optimal"] is True
+        assert len(staged["orders_fulfilled"]) == 21
+        assert staged["objective_value"] == pytest.approx(100040.0)
+        assert staged["late_minutes"] == pytest.approx(0.0)
+        names = [row["stage"] for row in staged["stages"]]
+        assert names[:3] == ["must_count", "ordinary", "lateness"]
+        by_name = {row["stage"]: row for row in staged["stages"]}
+        ordinary_gap = absolute_gap([2.0])
+        assert by_name["must_count"]["mip_abs_gap_used"] == pytest.approx(0.5)
+        assert by_name["ordinary"]["mip_abs_gap_used"] == pytest.approx(ordinary_gap)
+        assert ordinary_gap <= by_name["lateness"]["mip_abs_gap_used"] < 2.0
+        # The count stage encodes an absolute slack of 0.5. On an objective
+        # of size 1 that relative value is 0.5, which is not the caller's 5%.
+        assert by_name["must_count"]["mip_rel_gap_used"] != pytest.approx(0.05)
+        for name in ("ordinary", "lateness"):
+            row = by_name[name]
+            if solver == "gurobi":
+                assert row["mip_rel_gap_used"] == pytest.approx(0.0)
+            else:
+                assert row["mip_rel_gap_used"] == pytest.approx(
+                    row["mip_abs_gap_used"] / row["objective_upper_used"]
+                )
+        for row in staged["stages"]:
+            assert row["time_limit_hit"] is False
+            assert row["stop"] == "proven"
+        assert staged["stop"] == "proven"
+        weighted = solve_order_assignment(
+            orders,
+            pickers,
+            durations,
+            lateness_weight=1.0,
+            mip_gap=0.05,
+            assignment_solver=solver,
+            time_limit=10.0,
+        )
+        assert len(weighted["orders_fulfilled"]) == 21
+        assert weighted["mip_abs_gap_used"] < 2.0
+        _assert_encoded_gap(weighted, 2.0)
+        assert weighted["stop"] == "proven"
+
+
+def test_staged_keeps_both_jobs_when_lateness_costs_more_than_weight():
+    """T8b: both jobs score 0 once lateness is charged; one job scores 2."""
+    orders = pd.DataFrame(
+        [
+            {"order_id": "J1", "total_weight": 1.0, "priority_weight": 2.0, "cutoff_time": 10.0},
+            {"order_id": "J2", "total_weight": 1.0, "priority_weight": 2.0, "cutoff_time": 12.0},
+        ]
+    )
+    pickers = _one_picker(100.0)
+    durations = {"J1": 8.0, "J2": 8.0}
+    for solver in ("highs", "gurobi"):
+        weighted = solve_order_assignment(
+            orders,
+            pickers,
+            durations,
+            lateness_weight=1.0,
+            assignment_solver=solver,
+            time_limit=10.0,
+        )
+        assert len(weighted["orders_fulfilled"]) == 1
+        assert weighted["objective_value"] == pytest.approx(2.0)
+        assert weighted["drops"][0]["detail"] == "priority_tradeoff"
+        staged = solve_order_assignment(
+            orders,
+            pickers,
+            durations,
+            lateness_weight=1.0,
+            mip_gap=0.05,
+            staged_assignment=True,
+            assignment_solver=solver,
+            time_limit=10.0,
+        )
+        assert set(staged["orders_fulfilled"]) == {"J1", "J2"}
+        assert staged["late_minutes"] == pytest.approx(4.0)
+        assert staged["objective_value"] == pytest.approx(4.0)
+        assert staged["gap_requested"] == pytest.approx(0.05)
+        assert staged["stop"] == "proven"
+        for row in staged["stages"]:
+            assert row["mip_abs_gap_used"] < 2.0
+            assert row["stop"] == "proven"
+            if solver == "gurobi":
+                assert row["mip_rel_gap_used"] == pytest.approx(0.0)
+            else:
+                assert row["mip_rel_gap_used"] == pytest.approx(
+                    row["mip_abs_gap_used"] / row["objective_upper_used"]
+                )
+
+
+def _write_depot(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    pd.DataFrame([{"order_id": "J1"}]).to_csv(folder / "orders.csv", index=False)
+    pd.DataFrame([{"order_id": "J1", "location_id": "L1"}]).to_csv(
+        folder / "order_items.csv", index=False
+    )
+
+
+def test_run_docks_checks_the_shift_from_the_crew_file(tmp_path, monkeypatch, capsys):
+    """The dock runner uses shift_duration and screens summed minutes after both docks."""
+    import run_docks
+
+    by_depot = tmp_path / "by_depot"
+    _write_depot(by_depot / "PACK_A")
+    _write_depot(by_depot / "PACK_B")
+    pickers = pd.DataFrame(
+        [
+            {
+                "picker_id": "P1",
+                "equipment_type": "pallet_jack",
+                "max_weight": 50.0,
+                "shift_duration": 400.0,
+            }
+        ]
+    )
+    travel = pd.DataFrame(columns=["from_location", "to_location", "travel_time"])
+    loads = {"PACK_A": 250.0, "PACK_B": 160.0}
+
+    def fake_solve(orders, items, crew, matrix, depot_id, **kwargs):
+        return {
+            "is_optimal": True,
+            "picker_workload": {"P1": loads[depot_id]},
+            "picker_assignments": {"P1": []},
+            "orders_fulfilled": [],
+            "orders_not_fulfilled": [],
+            "drops": [],
+            "schedule": [],
+            "objective_value": 0.0,
+            "status": 0,
+            "stop": "proven",
+            "solver_bound": 0.0,
+            "solver_gap": 0.0,
+            "solver_abs_gap": 0.0,
+            "mip_rel_gap_used": 0.0,
+            "mip_abs_gap_used": 0.2,
+            "objective_upper_used": 1.0,
+            "runtime": 0.0,
+            "time_limit_hit": False,
+        }
+
+    monkeypatch.setattr(run_docks, "solve_order_picking", fake_solve)
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match="P1"):
+        run_docks.solve_docks(by_depot, pickers, travel, out)
+    for name in ("PACK_A", "PACK_B"):
+        table = pd.read_csv(out / name / "utilisation.csv")
+        assert table.iloc[0]["available_minutes"] == pytest.approx(400.0)
+    loads["PACK_A"] = 200.0
+    loads["PACK_B"] = 150.0
+    run_docks.solve_docks(by_depot, pickers, travel, tmp_path / "fit")
+    screen = capsys.readouterr().out
+    assert "Summed busy minutes fit the shift across 2 docks." in screen
+    assert "Clock overlap and the walk between docks are outside this screen." in screen
+    fit = pd.read_csv(tmp_path / "fit" / "PACK_B" / "utilisation.csv")
+    assert fit.iloc[0]["available_minutes"] == pytest.approx(400.0)
+    assert fit.iloc[0]["busy_minutes"] == pytest.approx(150.0)

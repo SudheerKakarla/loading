@@ -21,6 +21,144 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import pandas as pd
 
 _EPS = 1e-6
+_GAP_FRACTION = 0.1
+_FEASIBILITY_REL = 1e-6
+_NOISE_MARGIN = 10.0
+_DOCK_TOLERANCE = 1e-4
+
+
+def _positive_weights(weights: Iterable[float]) -> List[float]:
+    positive = []
+    for weight in weights:
+        value = float(weight)
+        if math.isfinite(value) and value > 0.0:
+            positive.append(value)
+    return positive
+
+
+def absolute_gap(weights: Iterable[float]) -> float:
+    """A tenth of the smallest positive weight.
+
+    That margin is enough to keep the job set: one such job cannot hide
+    inside the gap. A caller-supplied relative gap is not used to loosen it.
+    """
+    positive = _positive_weights(weights)
+    if not positive:
+        return 1e-6
+    return min(positive) * _GAP_FRACTION
+
+
+def reachable_absolute_gap(weights: Iterable[float], objective_upper: float) -> float:
+    """Absolute stop below one job, and above solver noise when that fits.
+
+    A relative feasibility tolerance near 1e-6 on an objective of size ``S``
+    leaves noise of about ``1e-6 * S``. A target finer than that noise is
+    never the reason the search stops. When the noise is already larger
+    than one job, the blended objective cannot certify a safe gap, and the
+    tenth-of-a-job target is kept for the staged stages whose scale is the
+    ordinary weights.
+    """
+    positive = _positive_weights(weights)
+    if not positive:
+        return 1e-6
+    smallest = min(positive)
+    target = smallest * _GAP_FRACTION
+    noise = _FEASIBILITY_REL * max(float(objective_upper), 1.0)
+    if noise >= smallest:
+        return target
+    return min(max(target, _NOISE_MARGIN * noise), 0.5 * smallest)
+
+
+def stopping_rel_gap(absolute: float, scale: float) -> float:
+    """Relative gap whose slack is ``absolute`` when ``scale`` bounds the objective.
+
+    SciPy's MILP wrapper accepts ``mip_rel_gap`` and not an absolute gap.
+    HiGHS stops when the absolute slack is about ``mip_rel_gap`` times the
+    objective size. ``scale`` has to be an upper bound on that size. A
+    smaller denominator stops with a larger absolute slack than requested.
+    """
+    return float(absolute) / max(abs(float(scale)), 1.0)
+
+
+def stop_reason(
+    time_limit_hit: bool,
+    is_optimal: bool,
+    achieved_abs_gap: Optional[float],
+    abs_gap_used: Optional[float],
+) -> str:
+    """``proven``, ``gap_reached``, ``time_limit``, or ``no_solution``."""
+    if time_limit_hit:
+        return "time_limit"
+    if not is_optimal:
+        return "no_solution"
+    if achieved_abs_gap is None or abs_gap_used is None:
+        return "proven"
+    if achieved_abs_gap <= 1e-6 or achieved_abs_gap <= 0.01 * float(abs_gap_used):
+        return "proven"
+    return "gap_reached"
+
+
+def available_before_cutoff(cutoff: float, shift_start: float, shift: float) -> float:
+    """Minutes a picker who starts at ``shift_start`` can work before ``cutoff``."""
+    window = max(0.0, float(cutoff) - float(shift_start))
+    return min(window, float(shift))
+
+
+def shared_crew_overages(
+    tables: Sequence[pd.DataFrame],
+    tolerance: float = _DOCK_TOLERANCE,
+) -> List[dict]:
+    """Pickers whose busy minutes across dock solves exceed the shift."""
+    totals: Dict[str, float] = {}
+    shifts: Dict[str, float] = {}
+    for table in tables:
+        for row in table.itertuples(index=False):
+            picker_id = str(row.picker_id)
+            totals[picker_id] = totals.get(picker_id, 0.0) + float(row.busy_minutes)
+            shifts[picker_id] = float(row.available_minutes)
+    over = []
+    for picker_id in sorted(totals):
+        busy = totals[picker_id]
+        available = shifts[picker_id]
+        if busy > available + tolerance:
+            over.append(
+                {
+                    "picker_id": picker_id,
+                    "busy_minutes": busy,
+                    "available_minutes": available,
+                }
+            )
+    return over
+
+
+def shared_crew_screen_message(count: int, unit: str = "docks") -> str:
+    """Line printed when the minute sum fits.
+
+    Clock overlap and the walk between docks stay outside this screen.
+    """
+    return (
+        f"Summed busy minutes fit the shift across {count} {unit}. "
+        "Clock overlap and the walk between docks are outside this screen."
+    )
+
+
+def require_shared_crew(
+    tables: Sequence[pd.DataFrame],
+    tolerance: float = _DOCK_TOLERANCE,
+) -> None:
+    """Raise when summed busy minutes across docks exceed the shift.
+
+    A return means those totals fit. Clock overlap and the walk between
+    docks stay outside this screen. The dock solves are unchanged.
+    """
+    over = shared_crew_overages(tables, tolerance)
+    if not over:
+        return
+    listed = ", ".join(
+        f"{row['picker_id']} {row['busy_minutes']:.3f} of {row['available_minutes']:.3f}"
+        for row in over
+    )
+    raise ValueError(f"A picker is booked past the shift across docks: {listed}.")
 
 
 def deadline_minutes(value: Any) -> Optional[float]:
@@ -198,8 +336,12 @@ def write_assignment_reports(
     utilisation: Sequence[Mapping[str, Any]],
     drops: Sequence[Mapping[str, Any]],
     schedule: Sequence[Mapping[str, Any]],
+    stages: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> None:
-    """Write utilisation.csv, dropped.csv, and late_jobs.csv."""
+    """Write utilisation.csv, dropped.csv, and late_jobs.csv.
+
+    A staged solve also writes stages.csv when ``stages`` is provided.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         list(utilisation),
@@ -226,6 +368,8 @@ def write_assignment_reports(
             "minutes_late",
         ],
     ).to_csv(directory / "late_jobs.csv", index=False)
+    if stages:
+        pd.DataFrame(list(stages)).to_csv(directory / "stages.csv", index=False)
 
 
 def parse_scenarios(text: str) -> List[dict]:
@@ -311,3 +455,33 @@ def shift_deadlines(orders: pd.DataFrame, minutes: float) -> pd.DataFrame:
         values.append("" if deadline is None else deadline + minutes)
     shifted["cutoff_time"] = values
     return shifted
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    """Sum busy minutes across dock utilisation files and raise past the shift.
+
+    A pass prints that the totals fit. Clock overlap and the walk between
+    docks stay outside this screen.
+
+    Run from ``order_picking/`` as
+    ``python source/assignment_reports.py outputs/chunk_assign/PACK_A/base/utilisation.csv outputs/chunk_assign/PACK_B/base/utilisation.csv``.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Report a picker booked past the shift across dock utilisation files."
+    )
+    parser.add_argument(
+        "utilisation",
+        nargs="+",
+        type=Path,
+        help="utilisation.csv files, one per dock solve.",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    tables = [pd.read_csv(path) for path in args.utilisation]
+    require_shared_crew(tables)
+    print(shared_crew_screen_message(len(tables), "dock files"))
+
+
+if __name__ == "__main__":
+    main()
