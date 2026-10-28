@@ -1,0 +1,5 @@
+Recorded under 2026-08-24 in DECISIONS.md:
+
+• MiniZinc is a parallel path (2.10.0 + HiGHS 1.15.1), not a replacement.
+• Binary A-B solve: optimal, objective 244014.18, 214 full + 2 partial vs SciPy HiGHS 215 + 1, both 216, axles under cap. Mix is in the compare CSV.
+• Integer element encoding is the one to avoid (190+2, not proven in 600 s).
