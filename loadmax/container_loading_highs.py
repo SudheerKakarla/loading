@@ -44,6 +44,12 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.optimize import Bounds, LinearConstraint, milp
 
+from loadmax.data_reader import (
+    CapacityPlan,
+    capacity_infeasible_message,
+    resolve_capacity_classes,
+)
+
 # ---------------------------------------------------------------------------
 # Lightweight pallet result container (replaces loadmax.models.Load_Obj)
 # ---------------------------------------------------------------------------
@@ -309,6 +315,7 @@ class ContainerLoadingOptimizerHiGHS:
         self.enforceMilkRun = False
         self._max_front_wt: Optional[float] = None
         self._max_rear_wt: Optional[float] = None
+        self._cap_plan: Optional[CapacityPlan] = None
 
         # Built during build_model()
         self._reg: Optional[VariableRegistry] = None
@@ -410,6 +417,12 @@ class ContainerLoadingOptimizerHiGHS:
             # objective was negated for minimisation; undo the negation
             print(f"Obj val : {-res.fun:,.4f}")
             print(f"MIP gap : {getattr(res, 'mip_gap', float('nan')):.4%}")
+        message = res.message
+        plan = self._cap_plan
+        if res.status == 2 and plan is not None and plan.has_rule:
+            extra = capacity_infeasible_message(plan)
+            print(extra)
+            message = f"{res.message} {extra}"
         print(f"Runtime : {runtime:.2f} s")
         print("=" * 70 + "\n")
 
@@ -420,7 +433,7 @@ class ContainerLoadingOptimizerHiGHS:
             "objective_value": (-res.fun) if has_solution else None,
             "mip_gap": getattr(res, "mip_gap", None),
             "runtime": runtime,
-            "message": res.message,
+            "message": message,
             "x": res.x if has_solution else None,
         }
 
@@ -440,6 +453,11 @@ class ContainerLoadingOptimizerHiGHS:
             sku_counts    : {v: int}
             excess_skus   : float
             stacking_groups : {(v,l,p): 'G2'|'G3'|'G4'}
+            pallet_count  : {v: int}   derived from the assignment
+            pallet_cap    : {v: int}   nominal, or the lower class cap
+            rc_present    : {v: 0|1}   truck holds a Class R pallet
+            tc_present    : {v: 0|1}   truck holds a Class T pallet
+            rc_tc_mix     : {v: 0|1}   truck holds both
         """
         if self._result is None or self._result.x is None:
             print("No feasible solution available.")
@@ -487,6 +505,42 @@ class ContainerLoadingOptimizerHiGHS:
         idx4 = reg.get(("exceed_mtl_n",))
         if idx4 is not None:
             sol["excess_skus"] = x[idx4]
+
+        plan = self._cap_plan or resolve_capacity_classes(ip)
+        class_r = plan.class_r_ids
+        class_t = plan.class_t_ids
+        pallet_count = {v: 0 for v in veh_id}
+        class_r_count = {v: 0 for v in veh_id}
+        class_t_count = {v: 0 for v in veh_id}
+        for (v, _l, _p, plt) in sol["y_full"]:
+            pallet_count[v] = pallet_count.get(v, 0) + 1
+            if plt in class_r:
+                class_r_count[v] = class_r_count.get(v, 0) + 1
+            if plt in class_t:
+                class_t_count[v] = class_t_count.get(v, 0) + 1
+        for (v, _l, _p, plt) in sol["y_prtl"]:
+            pallet_count[v] = pallet_count.get(v, 0) + 1
+            if plt in class_r:
+                class_r_count[v] = class_r_count.get(v, 0) + 1
+            if plt in class_t:
+                class_t_count[v] = class_t_count.get(v, 0) + 1
+        sol["pallet_count"] = {}
+        sol["pallet_cap"] = {}
+        sol["rc_present"] = {}
+        sol["tc_present"] = {}
+        sol["rc_tc_mix"] = {}
+        sol["class_r_count"] = {}
+        sol["class_t_count"] = {}
+        for v in veh_id:
+            has_r = class_r_count.get(v, 0) > 0
+            has_t = class_t_count.get(v, 0) > 0
+            sol["pallet_count"][v] = pallet_count.get(v, 0)
+            sol["class_r_count"][v] = class_r_count.get(v, 0)
+            sol["class_t_count"][v] = class_t_count.get(v, 0)
+            sol["rc_present"][v] = 1 if has_r else 0
+            sol["tc_present"][v] = 1 if has_t else 0
+            sol["rc_tc_mix"][v] = 1 if has_r and has_t else 0
+            sol["pallet_cap"][v] = plan.applicable_cap(v, has_r, has_t)
 
         # VDR stacking groups
         for v in veh_id:
@@ -672,6 +726,22 @@ class ContainerLoadingOptimizerHiGHS:
         if ip.get("enforceMaxSKUConstraint", False):
             self.enforceMaxSKUConstraint = True
 
+        self._cap_plan = resolve_capacity_classes(ip)
+        plan = self._cap_plan
+        if plan.class_r_active:
+            print(
+                f"  Class R cap {plan.cap_r} on {len(plan.class_r_ids)} pallet ids, "
+                f"{plan.mode} consolidation, penalty {plan.lambda_r:g}"
+            )
+        if plan.class_t_cap_active:
+            print(f"  Class T cap {plan.cap_t} on {len(plan.class_t_ids)} pallet ids")
+        if plan.mix_active:
+            print(f"  Class R / Class T mix penalty {plan.mu_mix:g}")
+        if plan.use_nominal_cap:
+            print(f"  Nominal pallet caps: {plan.nominal_cap}")
+        if plan.use_per_truck_wt:
+            print(f"  Per-truck weight caps: {plan.max_wt_by_truck}")
+
     # ------------------------------------------------------------------
     # Internal: position weights for milk-run
     # ------------------------------------------------------------------
@@ -768,6 +838,14 @@ class ContainerLoadingOptimizerHiGHS:
             reg.add_single("obj_full_term4", integrality=0, lb=0)
             reg.add_single("obj_prtl_term4", integrality=0, lb=0)
 
+        plan = self._cap_plan
+        if plan is not None and plan.class_r_active:
+            reg.add("rc_present", veh_id, integrality=1, lb=0, ub=1)
+        if plan is not None and (plan.class_t_cap_active or plan.mix_active):
+            reg.add("tc_present", veh_id, integrality=1, lb=0, ub=1)
+        if plan is not None and plan.mix_active:
+            reg.add("rc_tc_mix", veh_id, integrality=1, lb=0, ub=1)
+
         print(f"  Registered {len(reg)} variables.")
 
     # ------------------------------------------------------------------
@@ -810,11 +888,15 @@ class ContainerLoadingOptimizerHiGHS:
 
         prior_incentive = ip["priorityIncentive"]
 
-        # 1. Total weight limit
+        # 1. Total weight limit. Per-truck caps replace the scalar when provided.
+        plan = self._cap_plan
         for v in veh_id:
             coeffs = {reg["wt", v, l, p]: 1.0
                       for l in lyr_id for p in pos_id}
-            cb.add_le(coeffs, max_wt)
+            if plan is not None and plan.use_per_truck_wt:
+                cb.add_le(coeffs, plan.max_wt_by_truck[v])
+            else:
+                cb.add_le(coeffs, max_wt)
 
         # 2. Demand satisfaction (each pallet assigned at most its demand)
         for plt in full_id:
@@ -853,6 +935,8 @@ class ContainerLoadingOptimizerHiGHS:
                     for plt in prtl_id:
                         one_coeffs[reg["y_prtl", v, l, p, plt]] = 1.0
                     cb.add_le(one_coeffs, 1.0)
+
+        self._add_capacity_class_constraints()
 
         # 3b. Compact packing (same as Gurobi): fill from first_plt_n
         #     toward both ends, pair left/right, and stack layer 2 only
@@ -1088,6 +1172,106 @@ class ContainerLoadingOptimizerHiGHS:
 
         print(f"  Base constraints built: {len(cb._rows)}")
 
+    def _class_load_coeffs(self, vehicle: Any, pallet_ids: set, kind: str) -> Dict[int, float]:
+        """Coefficients of assignments of one class on one truck. kind is y_full or y_prtl."""
+        reg = self._reg
+        ip = self.inputParams
+        coeffs: Dict[int, float] = {}
+        if not pallet_ids:
+            return coeffs
+        for layer in ip["layerList"]:
+            for pos in ip["positionList"]:
+                for plt in pallet_ids:
+                    idx = reg.get((kind, vehicle, layer, pos, plt))
+                    if idx is not None:
+                        coeffs[idx] = 1.0
+        return coeffs
+
+    def _occupancy_coeffs(self, vehicle: Any) -> Dict[int, float]:
+        reg = self._reg
+        ip = self.inputParams
+        coeffs: Dict[int, float] = {}
+        for layer in ip["layerList"]:
+            for pos in ip["positionList"]:
+                coeffs[reg["full_plt", vehicle, layer, pos]] = 1.0
+                coeffs[reg["prtl_plt", vehicle, layer, pos]] = 1.0
+        return coeffs
+
+    def _add_capacity_class_constraints(self) -> None:
+        """Nominal caps, class presence, and conditional pallet caps.
+
+        The presence link is two-sided. ``sum(y) <= M * indicator`` forces the
+        indicator on when a class pallet is loaded. ``sum(y) >= indicator``
+        keeps it off when the truck has none, so a zero penalty cannot tighten
+        the cap of a truck that does not hold the class.
+        """
+        plan = self._cap_plan
+        if plan is None or not plan.has_rule:
+            return
+        ip = self.inputParams
+        reg = self._reg
+        cb = self._cb
+        veh_id = ip["containerList"]
+        full_ids = set(ip["fullPalletList"])
+        prtl_ids = set(ip["partialPalletList"])
+        class_r_full = plan.class_r_ids & full_ids
+        class_r_prtl = plan.class_r_ids & prtl_ids
+        class_t_full = plan.class_t_ids & full_ids
+        class_t_prtl = plan.class_t_ids & prtl_ids
+
+        if plan.use_nominal_cap:
+            for vehicle in veh_id:
+                cb.add_le(self._occupancy_coeffs(vehicle), float(plan.nominal_cap[vehicle]))
+
+        def _presence(vehicle: Any, full_set: set, prtl_set: set, name: str, big: int) -> None:
+            loaded = self._class_load_coeffs(vehicle, full_set, "y_full")
+            loaded.update(self._class_load_coeffs(vehicle, prtl_set, "y_prtl"))
+            upper = dict(loaded)
+            upper[reg[name, vehicle]] = -float(big)
+            cb.add_le(upper, 0.0)
+            lower = dict(loaded)
+            lower[reg[name, vehicle]] = -1.0
+            cb.add_ge(lower, 0.0)
+
+        if plan.class_r_active:
+            for vehicle in veh_id:
+                big = min(plan.nominal_cap[vehicle], plan.demand_r)
+                _presence(vehicle, class_r_full, class_r_prtl, "rc_present", big)
+                cap_row = self._occupancy_coeffs(vehicle)
+                cap_row[reg["rc_present", vehicle]] = float(
+                    plan.nominal_cap[vehicle] - plan.cap_r
+                )
+                cb.add_le(cap_row, float(plan.nominal_cap[vehicle]))
+            if plan.hard_mode:
+                limit = {reg["rc_present", vehicle]: 1.0 for vehicle in veh_id}
+                cb.add_le(limit, float(plan.truck_limit))
+                print(
+                    f"    [OK] Hard Class R consolidation: at most {plan.truck_limit} trucks"
+                )
+
+        need_t = plan.class_t_cap_active or plan.mix_active
+        if need_t:
+            for vehicle in veh_id:
+                big_t = min(plan.nominal_cap[vehicle], plan.demand_t)
+                _presence(vehicle, class_t_full, class_t_prtl, "tc_present", big_t)
+                if plan.class_t_cap_active:
+                    cap_row = self._occupancy_coeffs(vehicle)
+                    cap_row[reg["tc_present", vehicle]] = float(
+                        plan.nominal_cap[vehicle] - plan.cap_t
+                    )
+                    cb.add_le(cap_row, float(plan.nominal_cap[vehicle]))
+
+        if plan.mix_active:
+            for vehicle in veh_id:
+                cb.add_ge(
+                    {
+                        reg["rc_tc_mix", vehicle]: 1.0,
+                        reg["rc_present", vehicle]: -1.0,
+                        reg["tc_present", vehicle]: -1.0,
+                    },
+                    -1.0,
+                )
+
     # ------------------------------------------------------------------
     # Internal: VDR stacking constraints
     # ------------------------------------------------------------------
@@ -1318,6 +1502,16 @@ class ContainerLoadingOptimizerHiGHS:
 
         # ---- SKU penalty (positive coefficient because we minimise) ----
         reg.set_obj(("exceed_mtl_n",), sku_penalty * self.sku_penalty_factor)
+
+        # Class penalties are positive under minimisation. The same lambda
+        # applies to every truck, so no truck is preferred for Class R.
+        plan = self._cap_plan
+        if plan is not None and plan.class_r_active:
+            for v in veh_id:
+                reg.set_obj(("rc_present", v), plan.lambda_r)
+        if plan is not None and plan.mix_active:
+            for v in veh_id:
+                reg.set_obj(("rc_tc_mix", v), plan.mu_mix)
 
         print("  Objective vector assembled (Pyomo 4-term fill + priority - SKU penalty).")
 

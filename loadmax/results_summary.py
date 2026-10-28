@@ -9,10 +9,13 @@ Columns:
 
 from __future__ import annotations
 
+import math
 import re
 from collections import defaultdict
 from datetime import date, datetime
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
+
+from loadmax.data_reader import CapacityPlan, resolve_capacity_classes
 
 
 SUMMARY_COLUMNS = [
@@ -29,6 +32,16 @@ SUMMARY_COLUMNS = [
     "Cargo Weight: Rear",
     "Front Limit",
     "Rear Limit",
+]
+
+# Added only when a pallet-cap rule is active, so a run with no new keys
+# keeps the original summary columns.
+CAPACITY_COLUMNS = [
+    "Pallet Count",
+    "Pallet Cap",
+    "Class R Pallets",
+    "Class T Pallets",
+    "Class Mix",
 ]
 
 
@@ -105,6 +118,60 @@ def _cargo_front_rear(items: List[Any], input_params: dict) -> tuple:
     return front, rear
 
 
+def _pallet_id(instr: Any) -> Any:
+    if hasattr(instr, "palletID"):
+        return instr.palletID
+    return getattr(instr, "pallet_id", None)
+
+
+def _summary_columns(rows: List[Dict[str, Any]]) -> List[str]:
+    cols = list(SUMMARY_COLUMNS)
+    if rows and "Pallet Count" in rows[0]:
+        cols.extend(CAPACITY_COLUMNS)
+    return cols
+
+
+def validate_truck_capacity(
+    input_params: dict,
+    instructions: Iterable[Any],
+    plan: Optional[CapacityPlan] = None,
+) -> None:
+    """Raise if a truck exceeds its cap. Warn when Class R and Class T share a truck."""
+    plan = plan or resolve_capacity_classes(input_params)
+    if not plan.report:
+        return
+    instr_list = list(instructions)
+    by_container: Dict[Any, List[Any]] = defaultdict(list)
+    for instr in instr_list:
+        by_container[instr.container].append(instr)
+
+    loaded_r = 0
+    trucks_r = 0
+    for container, items in by_container.items():
+        r_n = sum(1 for item in items if _pallet_id(item) in plan.class_r_ids)
+        t_n = sum(1 for item in items if _pallet_id(item) in plan.class_t_ids)
+        count = len(items)
+        has_r = r_n > 0
+        has_t = t_n > 0
+        cap = plan.applicable_cap(container, has_r, has_t)
+        if count > cap:
+            raise ValueError(
+                f"Container {container} holds {count} pallets, above its cap of {cap} "
+                f"(Class R {r_n}, Class T {t_n})."
+            )
+        if has_r and has_t:
+            print(
+                f"WARNING: Container {container} holds both Class R and Class T pallets."
+            )
+        if has_r:
+            trucks_r += 1
+            loaded_r += r_n
+
+    if plan.class_r_active:
+        minimum = math.ceil(loaded_r / plan.cap_r) if plan.cap_r else 0
+        print(f"Class R trucks: {trucks_r} (minimum {minimum}).")
+
+
 def build_container_results_summary(
     input_params: dict,
     instructions: Iterable[Any],
@@ -127,6 +194,7 @@ def build_container_results_summary(
     for instr in instr_list:
         by_container[instr.container].append(instr)
 
+    plan = resolve_capacity_classes(input_params)
     rows: List[Dict[str, Any]] = []
     for container in sorted(by_container, key=lambda c: (str(type(c)), c)):
         items = by_container[container]
@@ -166,7 +234,7 @@ def build_container_results_summary(
         except (TypeError, ValueError):
             rear_limit = ""
 
-        rows.append({
+        row = {
             "Market Code": market,
             "Brand Group": brand_group,
             "Date Time": ship_date,
@@ -180,7 +248,20 @@ def build_container_results_summary(
             "Cargo Weight: Rear": round(cargo_rear),
             "Front Limit": int(front_limit) if front_limit != "" else "",
             "Rear Limit": int(rear_limit) if rear_limit != "" else "",
-        })
+        }
+        if plan.report:
+            r_n = sum(1 for item in items if _pallet_id(item) in plan.class_r_ids)
+            t_n = sum(1 for item in items if _pallet_id(item) in plan.class_t_ids)
+            has_r = r_n > 0
+            has_t = t_n > 0
+            row["Pallet Count"] = n_full + n_prtl
+            row["Pallet Cap"] = plan.applicable_cap(container, has_r, has_t)
+            row["Class R Pallets"] = r_n
+            row["Class T Pallets"] = t_n
+            row["Class Mix"] = "Yes" if has_r and has_t else "No"
+        rows.append(row)
+    if plan.report:
+        validate_truck_capacity(input_params, instr_list, plan)
     return rows
 
 
@@ -190,17 +271,20 @@ def print_container_results_summary(rows: List[Dict[str, Any]]) -> None:
     print("\n" + "=" * 80)
     print("RESULTS SUMMARY")
     print("=" * 80)
+    columns = _summary_columns(rows)
     table = PrettyTable()
-    table.field_names = SUMMARY_COLUMNS
+    table.field_names = columns
     table.align = "r"
     table.align["Market Code"] = "l"
     table.align["Brand Group"] = "l"
     table.align["Date Time"] = "l"
+    if "Class Mix" in columns:
+        table.align["Class Mix"] = "l"
     if not rows:
         print("  (no loaded containers)")
         return
     for row in rows:
-        table.add_row([row[c] for c in SUMMARY_COLUMNS])
+        table.add_row([row[c] for c in columns])
     print(table)
     print("=" * 80)
 
@@ -208,4 +292,4 @@ def print_container_results_summary(rows: List[Dict[str, Any]]) -> None:
 def write_container_results_summary(rows: List[Dict[str, Any]], path) -> None:
     import pandas as pd
 
-    pd.DataFrame(rows, columns=SUMMARY_COLUMNS).to_csv(path, index=False)
+    pd.DataFrame(rows, columns=_summary_columns(rows)).to_csv(path, index=False)

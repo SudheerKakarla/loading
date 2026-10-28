@@ -11,11 +11,9 @@ Do not copy chat recaps into this file. Keep this file lean — it loads every s
 | `loadmax/future_addons/` | Original app scripts (Pyomo, Excel preprocess, load-break). Not on the HiGHS path |
 | `data/` | Dumped `im_input_*.csv` plus source photos |
 | `examples/run_highs.py` | Truck solve CLI (scipy HiGHS) |
-| `examples/run_minizinc.py` | Same pad model via MiniZinc + bundled HiGHS |
 | `examples/run_mixed_length.py` | Extra model: lot length from `palletLengthDict`, mix chosen by the solver |
-| `loadmax/minizinc/` | `truck_loading.mzn` (not a replacement for the scipy path) |
 | `docs/` | Usage / migration notes; `truck_pallet_layouts.html` for 20/21/22 maps; `loadmax_model.html` for the pad/slot MIP; `order_picking_model.html` for the picker; `loadmax_mixed_length.html` for the 1D lot model |
-| `optimization_results/` | Per-solver folders: `highs/`, `minizinc/`, `mixed_length/` each `<csv-stem>/` |
+| `optimization_results/` | Per-solver folders: `highs/`, `mixed_length/` each `<csv-stem>/` |
 | `attachments/` | Extra screenshots (PalletLayout / Config) |
 | `.grok/` | Project skills and subagents (see `.grok/README.md`) |
 | `order_picking/` | Standalone picker: `inputs/`, `outputs/`, `visualizer/`, `source/`, `chunker/` |
@@ -28,12 +26,10 @@ No `src/` layout, no pip package unless asked. Picker code lives in `order_picki
 pip install -r requirements.txt
 python examples/run_highs.py
 python examples/run_highs.py data/im_input_A_B.csv 0.01
-python examples/run_minizinc.py
-python examples/run_minizinc.py data/im_input_A_B.csv 0.01
 python examples/run_mixed_length.py data/im_input_A_B.csv 0.01
 ```
 
-MiniZinc is optional. Driver is local `minizinc.exe` (2.10.0 + HiGHS 1.15.1), or `$MINIZINC`. Default A-B: 600 s, gap 0.01. SciPy HiGHS writes `optimization_results/highs/<csv-stem>/`; MiniZinc writes `optimization_results/minizinc/<csv-stem>/` (or `<stem>_<hash8>` if that stem already stored different CSV bytes). Warm-start from the matching HiGHS folder, or a legacy root CSV only when the stem hash is unchanged. `--no-warm-start` for a cold run. Keep `.fzn`/`.ozn` only for `--compile-only`. Keep the binary `y` pad model; do not split `truck_loading.mzn` yet. Mixed-length is a separate HiGHS model (`palletLengthDict`, endogenous lots); 1.0 m / 1.2 m are not hardcoded.
+SciPy HiGHS writes `optimization_results/highs/<csv-stem>/` (or `<stem>_<hash8>` if that stem already stored different CSV bytes). Mixed-length is a separate HiGHS model (`palletLengthDict`, endogenous lots); 1.0 m / 1.2 m are not hardcoded.
 
 HiGHS via scipy (`scipy.optimize.milp`). Gurobi (`loadmax/optimizer.py`) is optional; `__init__.py` imports it only if `gurobipy` is installed.
 

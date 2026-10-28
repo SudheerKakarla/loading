@@ -14,6 +14,4 @@ Portable vibe-coding kit from `C:\Users\sudhe\AgentsFiles`, mapped onto Grok’s
 
 Invoke skills with `/name` (or say the trigger phrase). Spawn agents with `spawn_subagent` using `subagent_type` equal to the agent `name`.
 
-Not fetched from the kit (wrong layout for this repo): `src/main.py`, `tests/conftest.py`, `tests/test_example.py`, kit `AGENTS.md` `src/` / ruff-mypy-pytest loop. Add real tests under `tests/` when a unit is worth pinning (CSV parse, axle math, volume denominator) — not a 600 s MIP.
-
-MiniZinc is a parallel solver path (`loadmax/container_loading_minizinc.py` + `loadmax/minizinc/truck_loading.mzn`), not a replacement for scipy HiGHS.
+Not fetched from the kit (wrong layout for this repo): `src/main.py`, `tests/conftest.py`, `tests/test_example.py`, kit `AGENTS.md` `src/` / ruff-mypy-pytest loop. Add real tests under `tests/` when a unit is worth pinning (CSV parse, axle math, volume denominator) — not a 600 s MIP. The truck solver is scipy HiGHS (`loadmax/container_loading_highs.py`).

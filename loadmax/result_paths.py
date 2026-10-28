@@ -2,7 +2,6 @@
 
 Example:
   optimization_results/highs/im_input_A_B/loading_instructions.csv
-  optimization_results/minizinc/im_input_A_B/loading_instructions.csv
   optimization_results/mixed_length/im_input_A_B/loading_instructions.csv
 
 Same input filename with different bytes uses <stem>_<hash8> so a stale

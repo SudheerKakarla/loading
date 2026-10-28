@@ -203,7 +203,17 @@ COMPLETE_INPUT_PARAMS = {
     # Physical limits
     'max_plt_n': 12,          # Max pallets per layer
     'max_lyr_n': 4,           # Max layers
-    'max_wt': 45000,          # Max weight (lbs)
+    'max_wt': 45000,          # Max weight (lbs). Optional containerMaxWt overrides this per truck.
+    # Optional class caps. Omit every key below to keep today's model.
+    # 'reducedCapMaxPallets': 24,             # cap of a truck that holds any Class R pallet
+    # 'palletReducedCapClassDict': {'FP001': 'Yes'},
+    # 'reducedCapMaterialList': ['MAT_A'],    # union with the dict, via palletMaterialDict
+    # 'tempControlledMaxPallets': 26,         # optional cap; Class T is palletRefrigeratedDict
+    # 'containerMaxPallets': {1: 26, 2: 24},
+    # 'containerMaxWt': {1: 42000, 2: 40000},
+    # 'reducedCapConsolidationWeight': 0.5,   # tie-break; above 1.0 can leave a pallet off
+    # 'reducedCapTempMixWeight': 0.25,        # prefer not to mix Class R and Class T
+    # 'reducedCapConsolidationMode': 'soft',  # 'hard' caps the number of Class R trucks
     'max_front_wt': 20000,    # Max front axle weight
     'max_rear_wt': 25000,     # Max rear axle weight
     'containerHeight': 110,   # Container height (inches)
