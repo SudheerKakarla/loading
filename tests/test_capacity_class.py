@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from loadmax.container_loading_highs import ContainerLoadingOptimizerHiGHS
+from loadmax.container_loading_highs import ContainerLoadingOptimizerHiGHS, LoadObj
 from loadmax.data_reader import (
     capacity_infeasible_message,
     read_im_input_csv,
@@ -41,6 +41,7 @@ def make_instance(
     pallet_weight: float = 10.0,
     max_wt: float = 100000.0,
     truck_priority: float = 10.0,
+    priorities: dict | None = None,
     cap_r: int | None = None,
     cap_t: int | None = None,
     truck_caps: dict | None = None,
@@ -113,7 +114,9 @@ def make_instance(
         "partialFractionValueForPartialPallet": {p: partial_fraction for p in prtl},
         "max_prior_full": {p: 0 for p in full},
         "max_prior_prtl": {p: 0 for p in prtl},
-        "container_priority": {c: truck_priority for c in trucks},
+        "container_priority": (
+            dict(priorities) if priorities is not None else {c: truck_priority for c in trucks}
+        ),
         "priorityIncentive": priority_incentive,
         "skuPriorityIncentive": sku,
         "max_wt": max_wt,
@@ -418,6 +421,52 @@ class CapacityClassTests(unittest.TestCase):
         self.assertTrue(instructions)
         self.assertTrue(all(item.container == 2 for item in instructions))
 
+    def test_penalty_uses_the_smallest_truck_priority(self):
+        params = make_instance(
+            n_trucks=2,
+            n_pos=2,
+            n_layers=1,
+            fill_demand=0,
+            r_demand=2,
+            cap_r=1,
+            priorities={1: 800, 2: 300},
+        )
+        plan = resolve_capacity_classes(params)
+        self.assertEqual(plan.lambda_r, 150)
+        self.assertEqual(plan.mu_mix, 75)
+        _, result, _, instructions = solve(params)
+        self.assertEqual(result["status"], 0, result["message"])
+        rows = tally(instructions)
+        self.assertEqual(sum(row["r"] for row in rows.values()), 2)
+        self.assertEqual(len(rows), 2)
+
+    def test_weight_utilization_uses_the_truck_cap(self):
+        def row_for(container, weight):
+            item = LoadObj()
+            item.container = container
+            item.position = 1
+            item.weight = weight
+            item.palletID = "FILL"
+            return item
+
+        shared = make_instance(n_trucks=2, n_pos=1, n_layers=1, max_wt=1000)
+        shared_rows = build_container_results_summary(shared, [row_for(1, 100)])
+        self.assertEqual(shared_rows[0]["Utilization (Weight)"], 10.0)
+
+        capped = make_instance(
+            n_trucks=2,
+            n_pos=1,
+            n_layers=1,
+            max_wt=0,
+            truck_weights={1: 100, 2: 500},
+        )
+        rows = build_container_results_summary(
+            capped, [row_for(1, 100), row_for(2, 100)]
+        )
+        by_truck = {row["Container"]: row["Utilization (Weight)"] for row in rows}
+        self.assertEqual(by_truck[1], 100.0)
+        self.assertEqual(by_truck[2], 20.0)
+
     def test_t12_bad_input_is_rejected_on_read(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
@@ -449,6 +498,18 @@ class CapacityClassTests(unittest.TestCase):
             with self.assertRaises(ValueError) as fraction:
                 read_im_input_csv(dump("fraction.csv", {"reducedCapMaxPallets": 1.5}))
             self.assertIn("integer", str(fraction.exception))
+
+            with self.assertRaises(ValueError) as zero:
+                read_im_input_csv(dump("zero.csv", {"reducedCapMaxPallets": 0}))
+            self.assertIn("positive integer", str(zero.exception))
+
+            with self.assertRaises(ValueError) as negative:
+                read_im_input_csv(dump("negative.csv", {"tempControlledMaxPallets": -5}))
+            self.assertIn("positive integer", str(negative.exception))
+
+            blank = make_instance()
+            blank["reducedCapMaxPallets"] = ""
+            self.assertIsNone(resolve_capacity_classes(blank).cap_r)
 
             with self.assertRaises(ValueError) as material:
                 read_im_input_csv(dump("material.csv", {"reducedCapMaterialList": [999]}))

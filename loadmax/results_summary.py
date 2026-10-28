@@ -216,7 +216,10 @@ def build_container_results_summary(
         else:
             denom_h = (n_positions or slot_cap) * container_h if container_h else 0.0
         util_vol = (sum(stack_h.values()) / denom_h * 100) if denom_h else 0.0
-        util_wt = (total_wt / max_wt * 100) if max_wt else 0.0
+        wt_cap = max_wt
+        if plan.use_per_truck_wt:
+            wt_cap = float(plan.max_wt_by_truck.get(container, max_wt) or 0)
+        util_wt = (total_wt / wt_cap * 100) if wt_cap else 0.0
 
         dates = [_instruction_date(i, input_params) for i in items]
         dates = [d for d in dates if d]

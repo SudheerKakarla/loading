@@ -7,8 +7,9 @@ Optional truck-cap keys (all omitted means today's model):
 
 - ``palletReducedCapClassDict`` / ``reducedCapMaterialList`` mark Class R.
 - ``reducedCapMaxPallets`` is the pallet cap of a truck that holds any Class R pallet.
+  Blank leaves the rule off. Zero and negative values are errors.
 - ``tempControlledMaxPallets`` is the optional cap of a truck that holds any
-  pallet flagged in ``palletRefrigeratedDict``.
+  pallet flagged in ``palletRefrigeratedDict``. Same blank / non-positive rule.
 - ``containerMaxPallets`` and ``containerMaxWt`` override the nominal pallet
   count and the total weight cap per truck.
 """
@@ -313,15 +314,15 @@ def _as_finite(value: Any, default: float) -> float:
 
 
 def _optional_positive_int(value: Any, name: str) -> Optional[int]:
-    """Positive integer cap, or None when the feature is off.
+    """Positive integer cap, or None when the value is blank.
 
-    Absent, blank, zero, and negative values turn the feature off.
-    A non-integer is an error.
+    A blank value leaves the rule off. Zero, negative, and non-integer
+    values are errors.
     """
     if value is None or value == "":
         return None
     if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer, got {value!r}")
+        raise ValueError(f"{name} must be a positive integer, got {value!r}")
     number = value
     if isinstance(number, str):
         text = number.strip()
@@ -330,15 +331,13 @@ def _optional_positive_int(value: Any, name: str) -> Optional[int]:
         try:
             number = float(text)
         except ValueError as exc:
-            raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+            raise ValueError(f"{name} must be a positive integer, got {value!r}") from exc
     if isinstance(number, float):
         if not math.isfinite(number) or not number.is_integer():
-            raise ValueError(f"{name} must be an integer, got {value!r}")
+            raise ValueError(f"{name} must be a positive integer, got {value!r}")
         number = int(number)
-    if not isinstance(number, int):
-        raise ValueError(f"{name} must be an integer, got {value!r}")
-    if number <= 0:
-        return None
+    if not isinstance(number, int) or number <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}")
     return number
 
 
@@ -525,8 +524,9 @@ def capacity_infeasible_message(plan: CapacityPlan) -> str:
 def resolve_capacity_classes(params: dict) -> CapacityPlan:
     """Normalise optional truck-cap keys and return the plan.
 
-    Absent or non-positive ``reducedCapMaxPallets`` / ``tempControlledMaxPallets``
-    leave that rule off. Omitted weights use 0.5 and 0.25. Omitted mode is soft.
+    A blank ``reducedCapMaxPallets`` / ``tempControlledMaxPallets`` leaves that
+    rule off. An explicit zero or negative value raises. Omitted weights use
+    0.5 and 0.25, scaled by the smallest container priority. Omitted mode is soft.
     Nominal pallet cap defaults to ``len(layerList) * len(positionList)``.
     Calling this twice is safe.
     """
@@ -772,11 +772,14 @@ def resolve_capacity_classes(params: dict) -> CapacityPlan:
     if cap_r is not None or cap_t is not None:
         demand_t = sum(_units(plt) for plt in class_t)
 
-    max_cp = max((_priority_of(params, cid) for cid in containers), default=1.0)
-    if max_cp < 0:
-        max_cp = 0.0
-    lambda_r = consolidation_weight * max_cp if cap_r is not None else 0.0
-    mu_mix = mix_weight * max_cp if cap_r is not None else 0.0
+    # Smallest truck priority keeps the penalty below one ordinary pallet on
+    # every truck. A negative priority is treated as zero so the penalty
+    # cannot become a reward for opening more Class R trucks.
+    scale = min((_priority_of(params, cid) for cid in containers), default=1.0)
+    if scale < 0:
+        scale = 0.0
+    lambda_r = consolidation_weight * scale if cap_r is not None else 0.0
+    mu_mix = mix_weight * scale if cap_r is not None else 0.0
 
     return CapacityPlan(
         nominal_cap=nominal,
