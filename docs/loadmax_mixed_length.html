@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LoadMax — 1D lot packing MIP</title>
+  <script>
+    window.MathJax = {
+      tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]], displayMath: [["\\[", "\\]"]] }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2330;
+      --ink: #e8eef5;
+      --muted: #9aa8b8;
+      --line: #2c3a4d;
+      --blue: #1e4f8a;
+      --blue-2: #2d6cb5;
+      --red: #b33a3a;
+      --red-2: #c45c3a;
+      --gold: #d4a017;
+      --door: #3d4f63;
+      --ok: #3d9b6e;
+      --warn: #c9a227;
+      --bad: #c45c5c;
+      --chip: #243044;
+      --front: #2d6cb5;
+      --rear: #c45c3a;
+      --len40: #3d9b6e;
+      --len48: #2d6cb5;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    a { color: #8ec5ff; }
+    header {
+      padding: 2.2rem 1.5rem 1.4rem;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #1a2838 0%, var(--bg) 100%);
+    }
+    header h1 { margin: 0 0 0.35rem; font-size: 1.7rem; font-weight: 650; }
+    header p { margin: 0; color: var(--muted); max-width: 58rem; }
+    .layout-page {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      max-width: 88rem;
+      margin: 0 auto;
+    }
+    nav {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      padding: 1.2rem 1rem 2rem 1.4rem;
+      border-right: 1px solid var(--line);
+      height: 100vh;
+      overflow: auto;
+      font-size: 0.86rem;
+    }
+    nav a {
+      display: block;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 0.22rem 0;
+    }
+    nav a:hover, nav a.active { color: var(--gold); }
+    nav .g { margin-top: 0.85rem; color: var(--gold); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    main { padding: 1.4rem 1.6rem 4rem; min-width: 0; }
+    h2 { font-size: 1.28rem; margin: 2.1rem 0 0.55rem; }
+    h3 { font-size: 1.05rem; margin: 1.4rem 0 0.4rem; }
+    p { color: #c5d0dc; }
+    .lede { color: var(--muted); margin-top: 0; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.7rem;
+      margin: 0.8rem 0 1.1rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.85rem 0.95rem;
+    }
+    .card strong { display: block; color: var(--gold); font-size: 0.74rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      background: var(--panel);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 0.6rem 0 1.1rem;
+    }
+    th, td { text-align: left; padding: 0.48rem 0.7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--gold); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    code, .k {
+      background: #243044;
+      padding: 0.05rem 0.32rem;
+      border-radius: 4px;
+      font-size: 0.85em;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+    .note { font-size: 0.9rem; color: var(--muted); }
+    .ok { color: var(--ok); }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1rem 1.1rem 1.15rem;
+      margin: 0.8rem 0 1.3rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 0.55rem; align-items: center; }
+    button, select {
+      background: var(--chip);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.38rem 0.7rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover { border-color: var(--gold); }
+    button.primary { background: #2a4a2f; border-color: var(--ok); }
+    .legend { display: flex; flex-wrap: wrap; gap: 0.7rem; margin: 0.4rem 0 0.7rem; font-size: 0.82rem; color: var(--muted); }
+    .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+      gap: 0.4rem; align-items: stretch; margin: 0.8rem 0 1rem;
+    }
+    .flow .card { margin: 0; text-align: center; }
+    .arrow { color: var(--gold); font-size: 1.35rem; align-self: center; }
+    .stack {
+      display: flex; gap: 10px; align-items: flex-end; justify-content: center;
+      min-height: 180px; padding: 0.6rem 0;
+    }
+    .col {
+      width: 96px; display: flex; flex-direction: column-reverse; gap: 4px;
+      align-items: stretch;
+    }
+    .box {
+      border-radius: 6px; padding: 0.35rem 0.3rem; text-align: center;
+      font-size: 0.72rem; font-weight: 650; color: #fff; border: 1px solid rgba(255,255,255,.15);
+    }
+    .box.full { background: #2d6cb5; }
+    .box.prtl { background: #c45c3a; }
+    .box.bad { background: #5a3a3a; outline: 2px dashed #c45c5c; }
+    .floorline {
+      height: 8px; background: #3d4f63; border-radius: 2px; margin-top: 2px;
+    }
+    .bar-row { display: grid; grid-template-columns: 64px 1fr 88px; gap: 0.5rem; align-items: center; margin: 0.35rem 0; font-size: 0.85rem; }
+    .bar { height: 16px; background: #243044; border-radius: 99px; overflow: hidden; display: flex; }
+    .bar > span { display: block; height: 100%; }
+    .tag { display: inline-block; border-radius: 999px; padding: 0.08rem 0.5rem; font-size: 0.75rem; background: var(--chip); border: 1px solid var(--line); color: var(--muted); }
+    .tag.on { color: var(--ok); border-color: var(--ok); }
+    .formula {
+      background: #121a24; border: 1px solid var(--line); border-radius: 10px;
+      padding: 0.7rem 0.9rem; overflow-x: auto; margin: 0.5rem 0 0.9rem;
+    }
+    .ex {
+      border-left: 3px solid var(--gold);
+      padding: 0.15rem 0 0.15rem 0.8rem;
+      margin: 0.5rem 0 0.9rem;
+    }
+    .truck-1d {
+      display: grid;
+      grid-template-columns: 52px 1fr 70px;
+      gap: 0.4rem;
+      min-width: 640px;
+    }
+    .nose, .door-col {
+      display: flex; align-items: center; justify-content: center;
+      writing-mode: vertical-rl; transform: rotate(180deg);
+      background: #121a24; border: 1px dashed var(--line); border-radius: 8px;
+      color: var(--muted); font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .door-col { background: var(--door); color: #dbe6f2; }
+    .lanes { display: flex; flex-direction: column; gap: 8px; position: relative; }
+    .lane-label { font-size: 0.68rem; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 2px; }
+    .row-strip {
+      position: relative;
+      display: flex;
+      height: 58px;
+      background: #121a24;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+    }
+    .lot-cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 0.68rem;
+      font-weight: 650;
+      border-right: 1px solid rgba(255,255,255,.14);
+      min-width: 0;
+      overflow: hidden;
+    }
+    .lot-cell small { font-weight: 500; font-size: 0.58rem; opacity: 0.9; }
+    .lot-cell.front { background: var(--front); }
+    .lot-cell.rear { background: var(--rear); }
+    .lot-cell.door { box-shadow: inset 0 0 0 2px #f5d76e; }
+    .lot-cell.empty-gap {
+      background: repeating-linear-gradient(-45deg, #1a2330, #1a2330 6px, #121a24 6px, #121a24 12px);
+      opacity: 0.55;
+    }
+    .mark {
+      position: absolute;
+      top: -4px;
+      bottom: -4px;
+      width: 2px;
+      background: var(--gold);
+      z-index: 2;
+      pointer-events: none;
+    }
+    .mark span {
+      position: absolute;
+      top: -16px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.65rem;
+      color: var(--gold);
+      white-space: nowrap;
+      letter-spacing: 0.04em;
+    }
+    .door-shade {
+      position: absolute;
+      top: 0; bottom: 0; right: 0;
+      background: rgba(212, 160, 23, 0.12);
+      pointer-events: none;
+      z-index: 1;
+    }
+    .ruler {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-top: 0.35rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 0.45rem;
+      margin-top: 0.7rem;
+    }
+    .stat {
+      background: #121a24;
+      border-radius: 8px;
+      padding: 0.45rem 0.6rem;
+      font-size: 0.82rem;
+    }
+    .stat b { display: block; color: var(--gold); font-size: 0.68rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    footer { color: var(--muted); font-size: 0.8rem; padding: 1.5rem; text-align: center; }
+    @media (max-width: 900px) {
+      .layout-page { grid-template-columns: 1fr; }
+      nav { display: none; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); text-align: center; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>LoadMax 1D model — variable-length lots along the trailer</h1>
+  <p>
+    This is an extra MIP, not a replacement for the live pad solver. Each row is a
+    <strong>one-dimensional strip</strong> of usable length \(L\). A lot is an
+    ordered position on that row, not a fixed pad: its length is the length of
+    the pallet assigned to it, from <code>palletLengthDict</code>. Layer 2 uses the
+    same lot and must have the same length. Axles use the lot’s \(x\)-center, not
+    A/B/C/D groups.
+    The pad/slot model is
+    <a href="loadmax_model.html">loadmax_model.html</a>.
+  </p>
+</header>
+<div class="layout-page">
+<nav>
+  <div class="g">Overview</div>
+  <a href="#what">What is being decided</a>
+  <a href="#vs-slot">Vs the slot model</a>
+  <a href="#pipeline">Pipeline</a>
+  <a href="#geom">Trailer geometry</a>
+  <a href="#packer">Interactive packer</a>
+  <div class="g">Inputs</div>
+  <a href="#inputs">Input catalog</a>
+  <div class="g">Model</div>
+  <a href="#vars">Variables</a>
+  <a href="#obj">Objective</a>
+  <a href="#cons">Constraints</a>
+  <a href="#c-demand">1. Demand</a>
+  <a href="#c-spot">2. One pallet per lot and layer</a>
+  <a href="#c-lot">3. Lot length, weight, and height</a>
+  <a href="#c-stack">4. Layer 2 + length match</a>
+  <a href="#c-row">5. Row length ≤ L</a>
+  <a href="#c-x">6. Cumulative x</a>
+  <a href="#c-axle">7. Front / rear by x-center</a>
+  <a href="#c-door">8. Door zone / height</a>
+  <a href="#c-wt">9. Weight, axles, balance</a>
+  <a href="#c-crush">10. Crushing</a>
+  <a href="#c-compact">11. Compact from the nose</a>
+  <a href="#c-sku">12. SKU penalty / prior / VDR</a>
+  <a href="#flags">What is on for A-B</a>
+  <div class="g">Outputs</div>
+  <a href="#out">Loading instructions + lots</a>
+  <a href="#oos">Out of scope</a>
+</nav>
+<main>
+
+<h2 id="what">What is being decided</h2>
+<p class="lede">
+  For each pallet, the model chooses a truck, layer (1 or 2), row (left or right),
+  and lot number \(k\). A lot has no pre-drawn rectangle. Its length comes from
+  the assigned pallet’s <code>palletLengthDict</code> entry. The model packs two
+  independent rows of usable length \(L\), then may stack a same-length pallet
+  on layer 2.
+</p>
+<div class="cards">
+  <div class="card"><strong>Decision</strong>Binary \(y_{v,l,s,k,i}\) — pallet \(i\) on truck \(v\), layer \(l\), row \(s\), lot \(k\)</div>
+  <div class="card"><strong>Lot length</strong>\(\ell_{v,s,k}\) = length of the layer-1 pallet (0 if empty)</div>
+  <div class="card"><strong>Engine</strong>HiGHS via <code>scipy.optimize.milp</code>; optional Gurobi twin in <code>container_loading_mixed_length_gurobi.py</code></div>
+  <div class="card"><strong>Not chosen</strong>Pallet rotation, trailer width, 2D \(x,y\) placement, A/B/C/D pad groups</div>
+</div>
+<div class="ex">
+  <p><strong>Toy.</strong> A 48″ pallet on left lot 1 of truck 1 occupies 48″ of the 720″ strip.
+  Lot 2 starts at \(x=48\). A 40″ pallet there occupies 40″ more. Layer 2 on lot 1
+  may only be another 48″ pallet — not a 40″ one.</p>
+</div>
+
+<h2 id="vs-slot">Vs the slot model (the live A-B solver)</h2>
+<p class="lede">
+  <a href="loadmax_model.html">loadmax_model.html</a> is <em>not</em> 1D packing.
+  It assigns pallets to 30 numbered pads. Pad size is Config, not a MIP variable.
+</p>
+<table>
+  <thead><tr><th></th><th>Slot / pad MIP</th><th>This 1D lot model</th></tr></thead>
+  <tbody>
+    <tr><td>Floor object</td><td>Pad \(p \in \{1,\ldots,30\}\)</td><td>Lot \(k = 1,\ldots,k_{\max}\) on left or right</td></tr>
+    <tr><td>Length used</td><td>Ignored (40″×48″ assumed)</td><td><code>palletLengthDict[i]</code> (no 1.0 / 1.2 default)</td></tr>
+    <tr><td>Row capacity</td><td>Fixed by PalletLayout</td><td>\(k_{\max} = \lfloor L / \min \ell_i \rfloor\) possible lot numbers</td></tr>
+    <tr><td>Axles</td><td>A+C front, B+D rear (pads 13–14 split 0.5)</td><td>Lot center \(x\) vs split \(x^\star\)</td></tr>
+    <tr><td>Door height</td><td>Pads 29, 30</td><td>Lots whose center is in the last \(2\min\ell_i\)</td></tr>
+    <tr><td>Compact packing</td><td>Fill from seed pad 12 both ways</td><td>Fill from nose: occupy \(k\) only if \(k-1\) is occupied</td></tr>
+    <tr><td>CLI</td><td><code>examples/run_highs.py</code></td><td><code>examples/run_mixed_length.py</code></td></tr>
+    <tr><td>Results</td><td><code>optimization_results/highs/</code></td><td><code>optimization_results/mixed_length/</code></td></tr>
+  </tbody>
+</table>
+<div class="ex">
+  In A-B, <code>palletLengthDict</code> is 48″ for every pallet, so the model has
+  15 equal lots per row. Variable lengths matter when, for example, 40″ and 48″
+  pallets share a truck. Set
+  <code>usableLength</code> / <code>containerLength</code> if \(L\) should be the real trailer, not pad-count × max length.
+</div>
+
+<h2 id="pipeline">Pipeline</h2>
+<div class="flow">
+  <div class="card"><strong>1. CSV</strong><code>im_input_*.csv</code> including <code>palletLengthDict</code></div>
+  <div class="arrow">→</div>
+  <div class="card"><strong>2. Geometry</strong>\(L\), \(k_{\max}\), split \(x^\star\), door zone</div>
+  <div class="arrow">→</div>
+  <div class="card"><strong>3. MIP</strong><code>container_loading_mixed_length.py</code></div>
+  <div class="arrow">→</div>
+  <div class="card"><strong>4. Output</strong>instructions + <code>lots.csv</code> (\(x\)-centers)</div>
+</div>
+<p class="note">
+  Same 4-term fill as the pad model. Gurobi file
+  <code>container_loading_mixed_length_gurobi.py</code> is the same 1D packing with a
+  different backend (see SKU-excess note under constraint 12).
+</p>
+
+<h2 id="geom">Trailer geometry (how \(L\) and the split are built)</h2>
+<p class="lede">The model computes these values before it creates its variables. A-B values below use inches because that CSV stores 48, not 1.2.</p>
+<div class="formula">
+\[
+\begin{aligned}
+L &= \texttt{usableLength}
+    \ \text{(or containerLength / trailerLength)} \\
+  &\quad\text{else}\quad n_{\text{along}} \times \max_i \ell_i, \quad
+    n_{\text{along}} = |\text{unique left-row positions}| \\
+k_{\max} &= \max\!\big(1,\ \lfloor L / \min_i \ell_i \rfloor\big) \\
+x^\star &= L \cdot \frac{n_{\text{front left}}}{n_{\text{along}}} \\
+\text{door zone} &= [L - 2\min_i \ell_i,\ L]
+\end{aligned}
+\]
+</div>
+<table>
+  <thead><tr><th>A-B input</th><th>Value</th><th>What the 1D model does</th></tr></thead>
+  <tbody>
+    <tr><td><code>leftPositionList</code></td><td>16 entries, one duplicate</td><td>Uses 15 positions along each row</td></tr>
+    <tr><td><code>palletLengthDict</code></td><td>all 48</td><td>\(L = 15\times 48 = 720″\), \(k_{\max}=15\)</td></tr>
+    <tr><td><code>frontPositionList</code></td><td>1–14</td><td>7 left-row positions before the split → \(x^\star = 720\times 7/15 = 336″\)</td></tr>
+    <tr><td>Door</td><td>\(2\times 48 = 96″\)</td><td>Centers \(\ge 624″\) get door height 3.5 ft</td></tr>
+    <tr><td>Physical 40′ trailer</td><td>≈ 480″</td><td><span class="warn">Not used</span> unless you set <code>usableLength</code></td></tr>
+  </tbody>
+</table>
+<div class="panel">
+  <p class="note" style="margin-top:0">A-B fallback strip. Gold = axle split. Shaded tail = door zone. Equal 48″ lots look like pads; variable-length lots do not.</p>
+  <div class="floor-wrap" style="overflow-x:auto">
+    <div class="truck-1d">
+      <div class="nose">Nose · x = 0</div>
+      <div class="lanes" id="geom-map"></div>
+      <div class="door-col">Door · x = L</div>
+    </div>
+  </div>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--front)"></i>Front (center &lt; split)</span>
+    <span><i class="sw" style="background:var(--rear)"></i>Rear</span>
+    <span>Gold outline = door-height lots</span>
+  </div>
+</div>
+
+<h2 id="packer">Interactive 1D packer</h2>
+<p class="lede">
+  The key 1D rule is \(\sum_k \ell_k \le L\) on each row. Each \(\ell_k\) is
+  chosen by the pallet assigned to lot \(k\). Add pallets to see their lengths;
+  front / rear colour follows the lot center, not a pad number.
+</p>
+<div class="panel">
+  <div class="row" style="margin-bottom:0.65rem">
+    <button type="button" class="primary" onclick="addLot(48)">Add 48″</button>
+    <button type="button" class="primary" onclick="addLot(40)">Add 40″</button>
+    <label>Row
+      <select id="pack-side" onchange="paintPacker()">
+        <option value="left">left</option>
+        <option value="right">right</option>
+      </select>
+    </label>
+    <button type="button" onclick="presetAB()">A-B 15 × 48″</button>
+    <button type="button" onclick="presetMix()">Mixed 40 / 48</button>
+    <button type="button" onclick="packReset()">Reset</button>
+  </div>
+  <p class="note" id="pack-msg">Empty trailer. \(L=720″\), split at 336″, door from 624″.</p>
+  <div class="floor-wrap" style="overflow-x:auto">
+    <div class="truck-1d">
+      <div class="nose">Nose</div>
+      <div class="lanes" id="pack-map"></div>
+      <div class="door-col">Door</div>
+    </div>
+  </div>
+  <div class="stats" id="pack-stats"></div>
+</div>
+<div class="ex">
+  Illegal in this MIP: a 48″ pallet when only 30″ remain on that row (the row-capacity rule).
+  Also illegal: a 40″ pallet on layer 2 of a 48″ lot (length match). The packer only
+  places layer 1.
+</div>
+
+<h2 id="inputs">Input catalog (1D-specific)</h2>
+<p class="lede">The 1D model reads the same <code>inputParams</code> as the pad model, but uses these keys for its geometry:</p>
+<table>
+  <thead><tr><th>Key</th><th>Role in 1D</th></tr></thead>
+  <tbody>
+    <tr><td><code>palletLengthDict</code></td><td>Required, positive, finite for every full and partial id. No default 1.0 / 1.2.</td></tr>
+    <tr><td><code>usableLength</code> / <code>containerLength</code> / <code>trailerLength</code></td><td>If a positive number, this <em>is</em> \(L\). Else \(n_{\text{along}}\times\max\ell_i\).</td></tr>
+    <tr><td><code>leftPositionList</code>, <code>frontPositionList</code></td><td>Only to estimate the number of row positions and the front fraction. Pad numbers do not identify lots.</td></tr>
+    <tr><td><code>palletWeightDict</code>, <code>palletHeightDict</code></td><td>Required, same as pad model.</td></tr>
+    <tr><td><code>containerHeight</code>, <code>containerHeightAtDoor</code>, <code>load_allow_ht</code></td><td>Stack-height limits; the door limit applies to lots in the door zone, not pads 29/30.</td></tr>
+    <tr><td><code>max_wt</code>, <code>max_front_wt</code>, <code>max_rear_wt</code></td><td>Cargo caps. Empty/0 front or rear skips axle rows.</td></tr>
+    <tr><td><code>enforce_compact_packing</code></td><td>yes/true/1 → occupy lot \(k\) only when lot \(k-1\) is occupied. Off in ocean mode.</td></tr>
+    <tr><td>Demand, SKU, priority, VDR flags</td><td>Same keys as the pad model.</td></tr>
+  </tbody>
+</table>
+<p class="note"><code>positionList</code>, <code>positionGroupDict</code>, A/B/C/D coefficients, <code>door_posn</code>, and <code>first_plt_n</code> are not used by this model. <code>palletProfitDict</code> is recorded only as extra input data.</p>
+
+<h2 id="vars">Decision variables</h2>
+<div class="formula">
+\[
+y^{\text{full}}_{v,l,s,k,i} \in \{0,1\}, \quad
+y^{\text{prtl}}_{v,l,s,k,j} \in \{0,1\}
+\]
+<p class="note" style="margin:0.4rem 0 0">Pallet on truck \(v\), layer \(l\in\{1,2\}\), row \(s\in\{\text{left},\text{right}\}\), lot \(k=1,\ldots,k_{\max}\).</p>
+\[
+O_{v,s,k} = \sum_{i,j} y_{\cdot,1,s,k,\cdot}
+\quad\text{(layer-1 occupancy)}, \qquad
+O^{(2)}_{v,s,k}\ \text{same on layer 2}
+\]
+\[
+\ell_{v,s,k} = \sum_i \ell_i\, y^{\text{full}}_{v,1,s,k,i} + \sum_j \ell_j\, y^{\text{prtl}}_{v,1,s,k,j}
+\]
+\[
+x^{\text{end}}_{v,s,1} = \ell_{v,s,1}, \qquad
+x^{\text{end}}_{v,s,k} = x^{\text{end}}_{v,s,k-1} + \ell_{v,s,k}
+\]
+\[
+x^{\text{ctr}}_{v,s,k} = x^{\text{end}}_{v,s,k} - \tfrac12 \ell_{v,s,k}
+\]
+</div>
+<p>
+  Also: lot weight \(W_{v,s,k}\) and stack height \(H_{v,s,k}\) (both layers);
+  binaries \(F_{v,s,k}\) (front) and \(D_{v,s,k}\) (door); extracted front weight
+  \(W^{\text{f}}_{v,s,k} = W_{v,s,k}\, F_{v,s,k}\) (linearised); SKU counters and
+  \(y^{\text{prior}}\) as in the pad model.
+  Empty lots have \(\ell=0\), so they consume no length. A missing lot number is
+  not a physical gap.
+</p>
+
+<h2 id="obj">Objective — same 4-term fill as the pad model</h2>
+<p class="lede">The model maximises the loading score. HiGHS stores negated coefficients and minimises. Lengths do not affect the score; the score depends on which pallets are loaded.</p>
+<div class="formula">
+\[
+\begin{aligned}
+\max \quad
+&\sum_{v,l,s,k,i}
+  c_v \cdot \pi_i \cdot y^{\text{full}}_{v,l,s,k,i}
++ \sum_{v,l,s,k,j}
+  c_v \cdot \pi_j \cdot f_j \cdot y^{\text{prtl}}_{v,l,s,k,j} \\
+&+ \sum_i \rho\, y^{\text{prior,full}}_i
++ \sum_j \rho\, y^{\text{prior,prtl}}_j
+- \lambda \cdot E
+\end{aligned}
+\]
+</div>
+<table>
+  <thead><tr><th>Symbol</th><th>A-B</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>\(c_v\)</td><td>800…300</td><td><code>container_priority</code> — preference for earlier trucks</td></tr>
+    <tr><td>\(\pi_i\)</td><td>2 if SKU ∈ <code>skuPriorityIncentive</code>, else 1</td><td>Only membership matters; rank 1/2/3/5 is unused</td></tr>
+    <tr><td>\(f_j\)</td><td>leftover / cases</td><td>Fraction of a partial pallet</td></tr>
+    <tr><td>\(\rho\)</td><td>2</td><td>Bonus for loading a prior pallet</td></tr>
+    <tr><td>\(E\)</td><td>≥ 0</td><td>SKU excess (HiGHS: fleet sum − 31)</td></tr>
+    <tr><td>\(\lambda\)</td><td>1 × 3 = 3</td><td><code>sku_penalty × sku_penalty_factor</code></td></tr>
+  </tbody>
+</table>
+<div class="panel">
+  <h3 style="margin-top:0">Worked score — one assignment</h3>
+  <div class="row">
+    <label>Truck
+      <select id="obj-truck" onchange="scoreObj()">
+        <option value="800">1 (800)</option>
+        <option value="700">2 (700)</option>
+        <option value="600">3 (600)</option>
+        <option value="500">4 (500)</option>
+        <option value="400">5 (400)</option>
+        <option value="300">6 (300)</option>
+      </select>
+    </label>
+    <label>SKU
+      <select id="obj-sku" onchange="scoreObj()">
+        <option value="2">listed (×2)</option>
+        <option value="1">not listed (×1)</option>
+      </select>
+    </label>
+    <label>Kind
+      <select id="obj-kind" onchange="scoreObj()">
+        <option value="1">full</option>
+        <option value="0.5">partial, fraction 0.5</option>
+      </select>
+    </label>
+  </div>
+  <p id="obj-out" class="ex"></p>
+</div>
+
+<h2 id="cons">Constraints</h2>
+<p class="lede">Each block is one family of rows in the MIP. Pictures are the 1D strip, not the 30-pad map.</p>
+
+<h3 id="c-demand">1. Demand cap</h3>
+<div class="formula">
+\[
+\sum_{v,l,s,k} y^{\text{full}}_{v,l,s,k,i} \le d_i
+\qquad
+\sum_{v,l,s,k} y^{\text{prtl}}_{v,l,s,k,j} \le d_j
+\]
+</div>
+<p>Upper bound, not a fill requirement. Leftover pallets on the dock are allowed. A pallet longer than \(L\) simply is never placed — the model stays feasible at objective 0.</p>
+
+<h3 id="c-spot">2. At most one pallet per (layer, lot)</h3>
+<div class="formula">\[ \sum_i y^{\text{full}}_{v,l,s,k,i} + \sum_j y^{\text{prtl}}_{v,l,s,k,j} \le 1 \]</div>
+<p>Each truck/row/layer/lot combination holds at most one pallet. The same lot can hold two pallets only when one is on layer 1 and the other is on layer 2.</p>
+
+<h3 id="c-lot">3. Lot length, weight, and height</h3>
+<div class="formula">
+\[
+O_{v,s,k} = \text{layer-1 assignments}, \qquad
+\ell_{v,s,k} = \text{layer-1 pallet length}
+\]
+\[
+W_{v,s,k} = \text{weight on both layers}, \qquad
+H_{v,s,k} = \text{height on both layers}
+\]
+</div>
+<p>Unoccupied lots have \(\ell = W = H = 0\).</p>
+
+<h3 id="c-stack">4. Layer 2 needs layer 1, same length, no stack on a partial</h3>
+<div class="formula">
+\[
+O^{(2)} \le O, \qquad
+\ell^{(2)} \le \ell, \qquad
+\ell^{(2)} \ge \ell - L\,(1-O^{(2)})
+\]
+\[
+y^{\text{prtl}}_{v,1,s,k,j} + O^{(2)}_{v,s,k} \le 1
+\]
+</div>
+<p>Layer 2 needs layer 1 and must have the same length (the same footprint, but not necessarily the same SKU). Nothing can be stacked on a partial pallet. A partial pallet can be placed on a full pallet when the lengths match.</p>
+<div class="panel">
+  <div class="row">
+    <button type="button" onclick="stackViz('ok')">48″ on 48″</button>
+    <button type="button" onclick="stackViz('len')">40″ on 48″ (illegal)</button>
+    <button type="button" onclick="stackViz('prtl')">Stack on partial (illegal)</button>
+    <span class="tag" id="stack-tag">legal</span>
+  </div>
+  <div class="stack" id="stack-viz"></div>
+</div>
+
+<h3 id="c-row">5. Row length capacity</h3>
+<div class="formula">\[ \sum_{k=1}^{k_{\max}} \ell_{v,s,k} \le L \quad \forall v,s \]</div>
+<p>Also implied by \(x^{\text{end}}_{v,s,k_{\max}} \le L\) (the variable bound). This is the row-capacity rule. Trailer width is not modelled; the left and right rows are independent strips with the same \(L\).</p>
+
+<h3 id="c-x">6. Cumulative position</h3>
+<div class="formula">
+\[
+x^{\text{end}}_{v,s,1} = \ell_{v,s,1}, \qquad
+x^{\text{end}}_{v,s,k} = x^{\text{end}}_{v,s,k-1} + \ell_{v,s,k}
+\]
+</div>
+<p>Lots follow one another from the nose. Their \(x\) positions are calculated from the lengths before them; \(x\) is not a separate decision for each pallet.</p>
+
+<h3 id="c-axle">7. Front / rear by lot center (not A+C / B+D)</h3>
+<div class="formula">
+\[
+x^{\text{ctr}} - x^\star \le L\,(1-F), \qquad
+x^\star - x^{\text{ctr}} \le L\, F
+\]
+\[
+W^{\text{f}} \le W,\quad
+W^{\text{f}} \le \texttt{max\_wt}\, F,\quad
+W^{\text{f}} \ge W - \texttt{max\_wt}\,(1-F)
+\]
+</div>
+<p>
+  \(F=1\) means the lot center is on the front side of \(x^\star\) (A-B: 336″).
+  The whole lot weight then counts as front cargo — there is no 0.5 split when a lot crosses the line.
+  At \(x^{\text{ctr}} = x^\star\) both \(F\in\{0,1\}\) are feasible (big-M tie).
+</p>
+<div class="panel">
+  <p class="note" style="margin-top:0">Same mixed row as the packer. Toggle to see which lots the MIP would count as front cargo.</p>
+  <div class="row" style="margin-bottom:0.5rem">
+    <button type="button" onclick="axleMode('center')">Color by x-center</button>
+    <button type="button" onclick="axleMode('allfront')">If this were pads 1–12 = front</button>
+  </div>
+  <div class="floor-wrap" style="overflow-x:auto">
+    <div class="truck-1d">
+      <div class="nose">Nose</div>
+      <div class="lanes" id="axle-map"></div>
+      <div class="door-col">Door</div>
+    </div>
+  </div>
+  <p class="note" id="axle-cap">Front = lots whose center is left of the gold split.</p>
+</div>
+
+<h3 id="c-door">8. Door zone and stack height</h3>
+<div class="formula">
+\[
+D=1 \iff x^{\text{ctr}} \ge L - 2\min_i \ell_i
+\]
+\[
+H_{v,s,k} \le H_{\text{body}} - (H_{\text{body}} - H_{\text{door}})\, D_{v,s,k}
+\]
+</div>
+<p>A-B: body 9 ft, door 3.5 ft. Typical pallet ~3.8 ft, so door-zone lots are single-layer. The zone is the last two minimum-length pallets (96″ on A-B), not pads 29 and 30.</p>
+
+<h3 id="c-wt">9. Total weight, axle caps, side / front-back balance</h3>
+<div class="formula">
+\[
+\sum_{s,k} W_{v,s,k} \le \texttt{max\_wt}
+\]
+\[
+\sum_{s,k} W^{\text{f}}_{v,s,k} \le 19920, \qquad
+\sum_{s,k} (W_{v,s,k}-W^{\text{f}}_{v,s,k}) \le 22080
+\]
+\[
+(1-\tau_{\text{ss}})\, W^{\text{right}}_v \le W^{\text{left}}_v \le (1+\tau_{\text{ss}})\, W^{\text{right}}_v
+\]
+</div>
+<p>
+  Axle rows are added only when both <code>max_front_wt</code> and <code>max_rear_wt</code> are positive.
+  Side-to-side uses left-row vs right-row lot weights (A-B \(\tau_{\text{ss}}=0.1\)).
+  Front-to-back uses \(W^{\text{f}}\) vs rear; A-B tolerance is 0 so those rows are skipped.
+  Ocean mode turns balancing and axles off.
+</p>
+
+<h3 id="c-crush">10. Crushing — heavier below</h3>
+<div class="formula">\[ \text{layer-1 weight} \ge \text{layer-2 weight} \]</div>
+<div class="panel">
+  <div class="row">
+    <button type="button" onclick="crushOk()">Legal (1190 under 997)</button>
+    <button type="button" onclick="crushBad()">Illegal (997 under 1190)</button>
+    <span class="tag" id="crush-tag">legal</span>
+  </div>
+  <div class="stack" id="crush-viz"></div>
+</div>
+
+<h3 id="c-compact">11. Compact packing — fill from the nose</h3>
+<p>When <code>enforce_compact_packing</code> is yes (and the run is not ocean mode), lots are filled from the nose. Unlike the pad model, there is no seed pad 12.</p>
+<div class="formula">\[ k&gt;1 \Rightarrow O_{v,s,k} \le O_{v,s,k-1} \]</div>
+<p>
+  Occupied lots must be \(1,2,\ldots,n\) with no missing lot number. Because an empty lot
+  has length 0, this does not change the physical layout; it keeps one clear numbering
+  for the same packing.
+</p>
+<div class="panel">
+  <div class="row">
+    <button type="button" class="primary" onclick="compactStep()">Step from nose</button>
+    <button type="button" onclick="compactReset()">Reset</button>
+    <span class="tag" id="compact-label">empty</span>
+  </div>
+  <p class="note">Layer 1, left row, A-B 15 × 48″. Gold = occupied after this step.</p>
+  <div class="floor-wrap" style="overflow-x:auto">
+    <div class="truck-1d">
+      <div class="nose">Nose</div>
+      <div class="lanes" id="compact-map"></div>
+      <div class="door-col">Door</div>
+    </div>
+  </div>
+</div>
+<div class="ex">
+  Illegal under compact packing: occupy lot 3 while lot 2 is empty.
+  Legal without the flag (and physically identical, since lot 2 would have length 0).
+</div>
+
+<h3 id="c-sku">12. SKU penalty, prior bonus, and VDR rules</h3>
+<div class="formula">
+\[
+m_{v,s} = \text{pallets of SKU }s\text{ on truck }v, \quad
+u_{v,s}\in\{0,1\}\ \text{if } m_{v,s}&gt;0
+\]
+\[
+E \ge \sum_v n_v - \texttt{unique\_sku\_n}
+\quad\text{(HiGHS / original Pyomo; } n_v=\sum_s u_{v,s}\text{)}
+\]
+\[
+0 \le y^{\text{prior}}_i \le \min(d^{\text{prior}}_i,\ \text{how many of }i\text{ were placed})
+\]
+</div>
+<p>
+  In A-B, <code>unique_sku_n = 31</code> is fleet-wide in Pyomo (“all containers combined”).
+  The HiGHS mixed-length model uses that fleet total. The Gurobi twin currently checks
+  \(E \ge n_v - 31\) per truck; on A-B this usually makes \(E=0\), so the penalty is dropped.
+  VDR G2/G3/G4 match the pad model and stay off unless <code>--vdr</code>.
+</p>
+<table>
+  <thead><tr><th>Group</th><th>Layer 2</th><th>Something on top of it?</th></tr></thead>
+  <tbody>
+    <tr><td>G1</td><td>yes</td><td>yes</td></tr>
+    <tr><td>G2</td><td>no</td><td>yes</td></tr>
+    <tr><td>G3</td><td>yes</td><td>no</td></tr>
+    <tr><td>G4</td><td>no</td><td>no</td></tr>
+  </tbody>
+</table>
+
+<h2 id="flags">What is enabled for an A-B mixed-length truck solve</h2>
+<table>
+  <thead><tr><th>Switch</th><th>Default CLI</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Crushing</td><td><span class="ok">on</span></td><td>Always when two layers exist</td></tr>
+    <tr><td>Side-to-side 10%</td><td><span class="ok">on</span></td><td>Left row vs right row weights</td></tr>
+    <tr><td>Front-to-back</td><td><span class="warn">off</span></td><td>tolerance 0</td></tr>
+    <tr><td>Axle caps 19920 / 22080</td><td><span class="ok">on</span></td><td>By lot \(x\)-center, not A+C/B+D</td></tr>
+    <tr><td>Compact packing</td><td><span class="ok">on</span></td><td>CSV says yes; starts at lot 1, not pad 12</td></tr>
+    <tr><td>G2/G3/G4</td><td><span class="warn">off</span></td><td><code>--vdr</code> to enable</td></tr>
+    <tr><td>Ocean</td><td><span class="warn">off</span></td><td><code>--ocean</code> drops axles, balance, <em>and</em> compact</td></tr>
+    <tr><td>Explicit \(L\)</td><td><span class="warn">unset</span></td><td>Uses the fallback 15 × 48″ = 720″</td></tr>
+  </tbody>
+</table>
+
+<h2 id="out">Outputs</h2>
+<p><code>solve()</code> returns status, objective, gap, runtime, \(L\), and \(k_{\max}\). HiGHS uses scipy status 0 = optimal; Gurobi uses <code>GRB.OPTIMAL</code> (= 2).</p>
+<p><code>generate_loading_instructions()</code> returns one row per placed pallet (HiGHS: <code>LoadObj</code>; Gurobi: dicts). The CLI writes:</p>
+<table>
+  <thead><tr><th>File</th><th>Contents</th></tr></thead>
+  <tbody>
+    <tr><td><code>optimization_results/mixed_length/&lt;stem&gt;/loading_instructions.csv</code></td><td>truck, side (left/right row), lot, layer, pallet, weight, height, lot length, \(x\)-center, is_front</td></tr>
+    <tr><td><code>lots.csv</code></td><td>Per occupied lot: <code>LotLength</code>, <code>X_end</code>, <code>X_center</code>, <code>Is_front</code></td></tr>
+    <tr><td><code>results_summary.csv</code></td><td>Same UI columns as the pad path; volume % still uses the Pyomo denominator \(H(n-2)+2H_{\text{door}}\). Front/rear remapped from lot <code>Is_front</code>.</td></tr>
+  </tbody>
+</table>
+<div class="ex">
+  Example lot row: Container 1, Side left, Lot 3, LotLength 48, X_end 144, X_center 120, Is_front 1
+  — the third 48″ pallet on the left, center still nose-side of the 336″ split.
+</div>
+
+<h2 id="oos">Out of scope</h2>
+<ul>
+  <li>Two-dimensional packing (width, pinwheel, rotation).</li>
+  <li>A separate free-floating \(x\) decision for each pallet; lot order determines \(x\).</li>
+  <li>Heterogeneous \(L\) per row or per truck.</li>
+  <li>Replacing the live pad MIP (<code>container_loading_highs.py</code> / MiniZinc).</li>
+  <li>Hardcoding 1.0 m / 1.2 m — lengths always come from the CSV.</li>
+</ul>
+<p class="note">
+  Code: <code>loadmax/container_loading_mixed_length.py</code>
+  · Gurobi: <code>loadmax/container_loading_mixed_length_gurobi.py</code>
+  · CLI: <code>python examples/run_mixed_length.py data/im_input_A_B.csv 0.01</code>
+  · Pad/slot explainer: <a href="loadmax_model.html">loadmax_model.html</a>.
+</p>
+</main>
+</div>
+<footer>LoadMax · 1D lot MIP explainer · mixed-length extra model · HiGHS</footer>
+<script>
+  const L = 720;
+  const SPLIT = 336;
+  const DOOR_FROM = 624;
+  const KMAX_48 = 15;
+
+  function stripHtml(lots, opts) {
+    opts = opts || {};
+    const colorMode = opts.colorMode || "center";
+    const occupy = opts.occupy;
+    const wrap = document.createElement("div");
+    wrap.style.position = "relative";
+
+    const shade = document.createElement("div");
+    shade.className = "door-shade";
+    shade.style.width = ((L - DOOR_FROM) / L * 100) + "%";
+    wrap.appendChild(shade);
+
+    const mark = document.createElement("div");
+    mark.className = "mark";
+    mark.style.left = (SPLIT / L * 100) + "%";
+    if (opts.caption !== false) {
+      mark.innerHTML = "<span>split " + SPLIT + "″</span>";
+    }
+    wrap.appendChild(mark);
+
+    const strip = document.createElement("div");
+    strip.className = "row-strip";
+
+    let x = 0;
+    lots.forEach((len, i) => {
+      const cell = document.createElement("div");
+      cell.className = "lot-cell";
+      cell.style.flex = String(len);
+      const xEnd = x + len;
+      const ctr = xEnd - 0.5 * len;
+      const isFront = colorMode === "allfront" ? (i < 7) : (ctr < SPLIT);
+      const isDoor = ctr >= DOOR_FROM;
+      cell.classList.add(isFront ? "front" : "rear");
+      if (isDoor) cell.classList.add("door");
+      if (typeof occupy === "number" && i >= occupy) cell.style.opacity = "0.22";
+      cell.innerHTML = (i + 1) + "<small>" + len + "″</small>";
+      cell.title = "Lot " + (i + 1) + " · " + len + "″ · x_end=" + xEnd +
+        " · center=" + ctr + (isFront ? " · front" : " · rear") +
+        (isDoor ? " · door" : "");
+      strip.appendChild(cell);
+      x = xEnd;
+    });
+    const used = lots.reduce((a, b) => a + b, 0);
+    if (used < L) {
+      const rest = document.createElement("div");
+      rest.className = "lot-cell empty-gap";
+      rest.style.flex = String(L - used);
+      rest.innerHTML = "<small>free " + (L - used) + "″</small>";
+      strip.appendChild(rest);
+    }
+    wrap.appendChild(strip);
+    return wrap;
+  }
+
+  function laneBlock(label, lots, opts) {
+    const box = document.createElement("div");
+    const lab = document.createElement("div");
+    lab.className = "lane-label";
+    lab.textContent = label;
+    box.appendChild(lab);
+    box.appendChild(stripHtml(lots, opts));
+    return box;
+  }
+
+  function ruler() {
+    const r = document.createElement("div");
+    r.className = "ruler";
+    r.innerHTML = "<span>0</span><span>336″ split</span><span>624″ door</span><span>720″</span>";
+    return r;
+  }
+
+  function equal48() {
+    return Array(KMAX_48).fill(48);
+  }
+
+  function paintGeom() {
+    const host = document.getElementById("geom-map");
+    host.innerHTML = "";
+    const lots = equal48();
+    host.appendChild(laneBlock("left", lots));
+    host.appendChild(laneBlock("right", lots, { caption: false }));
+    host.appendChild(ruler());
+  }
+  paintGeom();
+
+  const pack = { left: [], right: [] };
+
+  function usedLen(side) {
+    return pack[side].reduce((a, b) => a + b, 0);
+  }
+
+  function minLen() {
+    const all = pack.left.concat(pack.right);
+    return all.length ? Math.min.apply(null, all) : 40;
+  }
+
+  function kmaxNow() {
+    return Math.max(1, Math.floor(L / minLen()));
+  }
+
+  function paintPacker() {
+    const host = document.getElementById("pack-map");
+    host.innerHTML = "";
+    host.appendChild(laneBlock("left", pack.left));
+    host.appendChild(laneBlock("right", pack.right, { caption: false }));
+    host.appendChild(ruler());
+    const side = document.getElementById("pack-side").value;
+    const used = usedLen(side);
+    const kmax = pack.left.length || pack.right.length ? kmaxNow() : 18;
+    document.getElementById("pack-msg").textContent =
+      "Active row: " + side + " · used " + used + " / " + L +
+      "″ · lots " + pack[side].length + " / kmax " + kmax +
+      " · remaining " + (L - used) + "″.";
+    document.getElementById("pack-stats").innerHTML =
+      '<div class="stat"><b>Left used</b>' + usedLen("left") + "″ / " + pack.left.length + " lots</div>" +
+      '<div class="stat"><b>Right used</b>' + usedLen("right") + "″ / " + pack.right.length + " lots</div>" +
+      '<div class="stat"><b>kmax (from min length)</b>' + kmax + "</div>" +
+      '<div class="stat"><b>Split / door</b>' + SPLIT + "″ / " + DOOR_FROM + "″</div>";
+    paintAxle();
+  }
+
+  function addLot(len) {
+    const side = document.getElementById("pack-side").value;
+    const trial = pack[side].concat([len]);
+    const min = Math.min.apply(null, trial);
+    const kmax = Math.max(1, Math.floor(L / min));
+    if (pack[side].length + 1 > kmax) {
+      document.getElementById("pack-msg").textContent =
+        "Rejected: kmax = floor(L / min length) = " + kmax + " on this mix.";
+      return;
+    }
+    if (usedLen(side) + len > L) {
+      document.getElementById("pack-msg").textContent =
+        "Rejected: " + len + "″ does not fit in the remaining " + (L - usedLen(side)) + "″ (row length ≤ L).";
+      return;
+    }
+    pack[side].push(len);
+    paintPacker();
+  }
+
+  function presetAB() {
+    pack.left = equal48();
+    pack.right = equal48();
+    paintPacker();
+  }
+
+  function presetMix() {
+    const seq = [];
+    let x = 0;
+    const pattern = [48, 40, 48, 40, 48, 48, 40, 48, 40, 48, 40, 48, 40, 48];
+    for (const len of pattern) {
+      if (x + len > L) break;
+      seq.push(len);
+      x += len;
+    }
+    pack.left = seq.slice();
+    pack.right = seq.slice();
+    paintPacker();
+  }
+
+  function packReset() {
+    pack.left = [];
+    pack.right = [];
+    paintPacker();
+  }
+
+  let axleColor = "center";
+  function axleMode(mode) {
+    axleColor = mode;
+    paintAxle();
+  }
+  function paintAxle() {
+    const host = document.getElementById("axle-map");
+    if (!host) return;
+    const lots = pack.left.length ? pack.left : equal48();
+    host.innerHTML = "";
+    host.appendChild(laneBlock("left (demo)", lots, { colorMode: axleColor }));
+    host.appendChild(ruler());
+    document.getElementById("axle-cap").textContent = axleColor === "center"
+      ? "Front = lots whose center is left of the gold split (the MIP rule)."
+      : "Illustration only: first 7 lots painted front, as if pad index decided the axle — the 1D MIP does not do this.";
+  }
+
+  paintPacker();
+  presetMix();
+
+  function scoreObj() {
+    const c = +document.getElementById("obj-truck").value;
+    const pi = +document.getElementById("obj-sku").value;
+    const f = +document.getElementById("obj-kind").value;
+    const s = c * pi * f;
+    document.getElementById("obj-out").innerHTML =
+      "Fill score for this one assignment: <strong>" + s +
+      "</strong> &nbsp;=&nbsp; " + c + " × " + pi + " × " + f +
+      ". Same formula as the pad model; lot length is not in the score.";
+  }
+  scoreObj();
+
+  function stackViz(kind) {
+    const host = document.getElementById("stack-viz");
+    const tag = document.getElementById("stack-tag");
+    if (kind === "ok") {
+      host.innerHTML =
+        '<div class="col"><div class="box full">L2 · 48″ · 997 lb</div><div class="box full">L1 · 48″ · 1190 lb</div><div class="floorline"></div><small style="text-align:center;color:var(--muted)">same length</small></div>';
+      tag.textContent = "legal · lengths match, 1190 ≥ 997";
+      tag.className = "tag on";
+    } else if (kind === "len") {
+      host.innerHTML =
+        '<div class="col"><div class="box bad">L2 · 40″</div><div class="box full">L1 · 48″</div><div class="floorline"></div><small style="text-align:center;color:var(--muted)">length mismatch</small></div>';
+      tag.textContent = "illegal · layer-2 length must equal lot length";
+      tag.className = "tag";
+      tag.style.color = "var(--bad)";
+    } else {
+      host.innerHTML =
+        '<div class="col"><div class="box bad">L2 · anything</div><div class="box prtl">L1 · partial</div><div class="floorline"></div><small style="text-align:center;color:var(--muted)">no stack on partial</small></div>';
+      tag.textContent = "illegal · partial cannot be a base";
+      tag.className = "tag";
+      tag.style.color = "var(--bad)";
+    }
+  }
+  stackViz("ok");
+
+  function renderCrush(ok) {
+    const host = document.getElementById("crush-viz");
+    const tag = document.getElementById("crush-tag");
+    if (ok) {
+      host.innerHTML = '<div class="col"><div class="box full">L2 · 997 lb</div><div class="box full">L1 · 1190 lb</div><div class="floorline"></div></div>';
+      tag.textContent = "legal · 1190 ≥ 997";
+      tag.className = "tag on";
+    } else {
+      host.innerHTML = '<div class="col"><div class="box prtl">L2 · 1190 lb</div><div class="box full" style="background:#5a3a3a">L1 · 997 lb</div><div class="floorline"></div></div>';
+      tag.textContent = "illegal · 997 < 1190";
+      tag.className = "tag";
+      tag.style.color = "var(--bad)";
+    }
+  }
+  function crushOk() { renderCrush(true); }
+  function crushBad() { renderCrush(false); }
+  crushOk();
+
+  let compactN = 0;
+  function paintCompact() {
+    const host = document.getElementById("compact-map");
+    host.innerHTML = "";
+    host.appendChild(laneBlock("left", equal48(), { occupy: compactN }));
+    host.appendChild(ruler());
+    const lab = document.getElementById("compact-label");
+    lab.textContent = compactN === 0 ? "empty" : compactN + " / 15 occupied from the nose";
+  }
+  function compactStep() {
+    compactN = Math.min(15, compactN + 1);
+    paintCompact();
+  }
+  function compactReset() {
+    compactN = 0;
+    paintCompact();
+  }
+  paintCompact();
+</script>
+</body>
+</html>

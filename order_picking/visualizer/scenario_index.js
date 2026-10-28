@@ -1,0 +1,1 @@
+window.PICKING_INDEX = [{"id": "layout_example_shared", "label": "Six-aisle sample, shared shift"}, {"id": "layout_example", "label": "Six-aisle sample, no sharing"}, {"id": "layout_small", "label": "Two-aisle picture"}, {"id": "layout_wave", "label": "Six-aisle wave"}, {"id": "layout_warehouse", "label": "Eight-aisle warehouse"}];

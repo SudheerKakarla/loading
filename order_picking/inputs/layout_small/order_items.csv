@@ -1,0 +1,4 @@
+order_id,item_id,location_id,pick_time
+O1,A,L1,0
+O1,B,L2,0
+O2,C,L1,0

@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LoadMax — inputs, MIP, constraints, outputs</title>
+  <script>
+    window.MathJax = {
+      tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]], displayMath: [["\\[", "\\]"]] }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2330;
+      --ink: #e8eef5;
+      --muted: #9aa8b8;
+      --line: #2c3a4d;
+      --blue: #1e4f8a;
+      --blue-2: #2d6cb5;
+      --red: #b33a3a;
+      --red-2: #c45c3a;
+      --gold: #d4a017;
+      --door: #3d4f63;
+      --ok: #3d9b6e;
+      --warn: #c9a227;
+      --bad: #c45c5c;
+      --chip: #243044;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    a { color: #8ec5ff; }
+    header {
+      padding: 2.2rem 1.5rem 1.4rem;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #1a2838 0%, var(--bg) 100%);
+    }
+    header h1 { margin: 0 0 0.35rem; font-size: 1.7rem; font-weight: 650; }
+    header p { margin: 0; color: var(--muted); max-width: 54rem; }
+    .layout-page {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      max-width: 88rem;
+      margin: 0 auto;
+    }
+    nav {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      padding: 1.2rem 1rem 2rem 1.4rem;
+      border-right: 1px solid var(--line);
+      height: 100vh;
+      overflow: auto;
+      font-size: 0.86rem;
+    }
+    nav a {
+      display: block;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 0.22rem 0;
+    }
+    nav a:hover, nav a.active { color: var(--gold); }
+    nav .g { margin-top: 0.85rem; color: var(--gold); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    main { padding: 1.4rem 1.6rem 4rem; min-width: 0; }
+    h2 { font-size: 1.28rem; margin: 2.1rem 0 0.55rem; }
+    h3 { font-size: 1.05rem; margin: 1.4rem 0 0.4rem; }
+    p { color: #c5d0dc; }
+    .lede { color: var(--muted); margin-top: 0; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.7rem;
+      margin: 0.8rem 0 1.1rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.85rem 0.95rem;
+    }
+    .card strong { display: block; color: var(--gold); font-size: 0.74rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      background: var(--panel);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 0.6rem 0 1.1rem;
+    }
+    th, td { text-align: left; padding: 0.48rem 0.7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--gold); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    code, .k {
+      background: #243044;
+      padding: 0.05rem 0.32rem;
+      border-radius: 4px;
+      font-size: 0.85em;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+    .note { font-size: 0.9rem; color: var(--muted); }
+    .ok { color: var(--ok); }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1rem 1.1rem 1.15rem;
+      margin: 0.8rem 0 1.3rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 0.55rem; align-items: center; }
+    button, select {
+      background: var(--chip);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.38rem 0.7rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover { border-color: var(--gold); }
+    button.primary { background: #2a4a2f; border-color: var(--ok); }
+    .legend { display: flex; flex-wrap: wrap; gap: 0.7rem; margin: 0.4rem 0 0.7rem; font-size: 0.82rem; color: var(--muted); }
+    .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+    .A { background: var(--blue); }
+    .B { background: var(--blue-2); }
+    .C { background: var(--red); }
+    .D { background: var(--red-2); }
+    .floor-wrap { overflow-x: auto; padding-bottom: 0.3rem; }
+    .truck {
+      display: grid;
+      grid-template-columns: 52px 1fr 70px;
+      gap: 0.4rem;
+      min-width: 780px;
+    }
+    .nose, .door-col {
+      display: flex; align-items: center; justify-content: center;
+      writing-mode: vertical-rl; transform: rotate(180deg);
+      background: #121a24; border: 1px dashed var(--line); border-radius: 8px;
+      color: var(--muted); font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .door-col { background: var(--door); color: #dbe6f2; }
+    .lanes { display: flex; flex-direction: column; gap: 6px; }
+    .lane { display: flex; gap: 3px; }
+    .pad {
+      flex: 1 1 0; min-height: 52px; border-radius: 5px; color: #fff;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-size: 0.72rem; font-weight: 650; border: 1px solid rgba(255,255,255,0.12);
+      position: relative;
+    }
+    .pad small { font-weight: 500; font-size: 0.58rem; opacity: 0.9; }
+    .pad.on { outline: 2px solid #f5d76e; }
+    .pad.seed { box-shadow: inset 0 0 0 2px #f5d76e; }
+    .pad.empty { opacity: 0.28; }
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+      gap: 0.4rem; align-items: stretch; margin: 0.8rem 0 1rem;
+    }
+    .flow .card { margin: 0; text-align: center; }
+    .arrow { color: var(--gold); font-size: 1.35rem; align-self: center; }
+    .stack {
+      display: flex; gap: 10px; align-items: flex-end; justify-content: center;
+      min-height: 180px; padding: 0.6rem 0;
+    }
+    .col {
+      width: 88px; display: flex; flex-direction: column-reverse; gap: 4px;
+      align-items: stretch;
+    }
+    .box {
+      border-radius: 6px; padding: 0.35rem 0.3rem; text-align: center;
+      font-size: 0.72rem; font-weight: 650; color: #fff; border: 1px solid rgba(255,255,255,.15);
+    }
+    .box.full { background: #2d6cb5; }
+    .box.prtl { background: #c45c3a; }
+    .box.g3 { background: #6b3d8a; }
+    .floorline {
+      height: 8px; background: #3d4f63; border-radius: 2px; margin-top: 2px;
+    }
+    .bar-row { display: grid; grid-template-columns: 52px 1fr 70px; gap: 0.5rem; align-items: center; margin: 0.35rem 0; font-size: 0.85rem; }
+    .bar { height: 16px; background: #243044; border-radius: 99px; overflow: hidden; display: flex; }
+    .bar > span { display: block; height: 100%; }
+    .tag { display: inline-block; border-radius: 999px; padding: 0.08rem 0.5rem; font-size: 0.75rem; background: var(--chip); border: 1px solid var(--line); color: var(--muted); }
+    .tag.on { color: var(--ok); border-color: var(--ok); }
+    .tag.off { color: var(--muted); }
+    .formula {
+      background: #121a24; border: 1px solid var(--line); border-radius: 10px;
+      padding: 0.7rem 0.9rem; overflow-x: auto; margin: 0.5rem 0 0.9rem;
+    }
+    .ex {
+      border-left: 3px solid var(--gold);
+      padding: 0.15rem 0 0.15rem 0.8rem;
+      margin: 0.5rem 0 0.9rem;
+    }
+    footer { color: var(--muted); font-size: 0.8rem; padding: 1.5rem; text-align: center; }
+    @media (max-width: 900px) {
+      .layout-page { grid-template-columns: 1fr; }
+      nav { display: none; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); text-align: center; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>LoadMax math model — slots, not Tetris</h1>
+  <p>
+    The live solver is a mixed-integer program: assign already-built 40″×48″ pallets to
+    numbered floor pads and layers. This page walks the A-B truck instance —
+    inputs, variables, objective, every constraint with a picture, then the output tables.
+    Floor-map variants (20 / 21 / 22) are in
+    <a href="truck_pallet_layouts.html">truck_pallet_layouts.html</a>.
+    The extra <strong>1D lot</strong> model (length from
+    <code>palletLengthDict</code>, not numbered pads) is
+    <a href="loadmax_mixed_length.html">loadmax_mixed_length.html</a>.
+  </p>
+</header>
+<div class="layout-page">
+<nav>
+  <div class="g">Overview</div>
+  <a href="#what">What is being decided</a>
+  <a href="#pipeline">Pipeline</a>
+  <a href="#ab">A-B instance</a>
+  <div class="g">Inputs</div>
+  <a href="#inputs">Input catalog</a>
+  <a href="#floor">Floor map</a>
+  <div class="g">Model</div>
+  <a href="#vars">Variables</a>
+  <a href="#obj">Objective</a>
+  <a href="#cons">Constraints</a>
+  <a href="#c-weight">1. Total weight</a>
+  <a href="#c-demand">2. Demand</a>
+  <a href="#c-spot">3. One pallet per spot</a>
+  <a href="#c-compact">4. Compact packing</a>
+  <a href="#c-partial">5. Partials cannot be a base</a>
+  <a href="#c-height">6. Stack height / door</a>
+  <a href="#c-crush">7. Crushing</a>
+  <a href="#c-balance">8. Left / right balance</a>
+  <a href="#c-axle">9. Front / rear cargo</a>
+  <a href="#c-sku">10. SKU count penalty</a>
+  <a href="#c-prior">11. Priority bonus cap</a>
+  <a href="#c-vdr">12. G2 / G3 / G4</a>
+  <a href="#flags">What is on for A-B</a>
+  <div class="g">Outputs</div>
+  <a href="#out">Loading instructions</a>
+  <a href="#summary">Results summary</a>
+  <a href="#physics">Optional physics check</a>
+</nav>
+<main>
+
+<h2 id="what">What is being decided</h2>
+<p class="lede">
+  For each pallet <em>and</em> each empty pad, the model answers: which truck, which layer (1 or 2), which numbered pad.
+  It does <strong>not</strong> choose pallet rotation, does not place cartons in continuous \(x,y,z\), and does not build pallets from cases.
+</p>
+<div class="cards">
+  <div class="card"><strong>Decision</strong>Binary \(y_{v,l,p,i}\) — pallet \(i\) on truck \(v\), layer \(l\), pad \(p\)</div>
+  <div class="card"><strong>Not a decision</strong>40″×48″ footprint, pinwheel vs straight (that is the Config map)</div>
+  <div class="card"><strong>Engine</strong>HiGHS MIP via <code>scipy.optimize.milp</code> (maximise, implemented as minimise of the negated objective)</div>
+  <div class="card"><strong>A-B size</strong>6 trucks × 2 layers × 30 pads × ~33 pallet types ≈ 12k assignment binaries</div>
+</div>
+<div class="ex">
+  <p><strong>Toy.</strong> Pad 7, truck 1, layer 1 can hold at most one of <code>plt_12</code> or <code>plt_208</code> (or nothing). Layer 2 on the <em>same</em> pad 7 is a second slot in that column, not a different floor location.</p>
+</div>
+
+<h2 id="pipeline">Pipeline</h2>
+<div class="flow">
+  <div class="card"><strong>1. Config</strong>PalletLayout pads, A/B/C/D, door, <code>first_plt_n</code></div>
+  <div class="arrow">→</div>
+  <div class="card"><strong>2. inputParams</strong>CSV dump <code>im_input_A_B.csv</code></div>
+  <div class="arrow">→</div>
+  <div class="card"><strong>3. MIP</strong><code>container_loading_highs.py</code></div>
+  <div class="arrow">→</div>
+  <div class="card"><strong>4. Output</strong>instructions + utilization by truck</div>
+</div>
+<p class="note">Original production path was Pyomo + Gurobi (<code>future_addons/optimizer_pyomo.py</code>). HiGHS is the same slot model. Cases→pallets is preprocess, not this MIP.</p>
+
+<h2 id="ab">A-B instance used in the examples</h2>
+<table>
+  <thead><tr><th>Item</th><th>Value</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>Market</td><td>A-B (US10 / US16)</td><td>One market, one brand group per solve</td></tr>
+    <tr><td>Trucks</td><td>6, priority 800 … 300</td><td>Fill truck 1 first</td></tr>
+    <tr><td>Floor</td><td>30 pads, 2 layers</td><td>60 slots per truck, 360 slots total</td></tr>
+    <tr><td>Door pads</td><td>29, 30</td><td>Height cap 3.5 ft instead of 9 ft</td></tr>
+    <tr><td>Compact seed</td><td><code>first_plt_n = 12</code></td><td>Fill outward from pad 12</td></tr>
+    <tr><td>Weight caps</td><td>42,000 total · 19,920 front · 22,080 rear</td><td>lb of <em>cargo</em>, pad groups A+C / B+D</td></tr>
+    <tr><td>Demand</td><td>217 full + 2 partial types</td><td>Each physical pallet used at most once</td></tr>
+    <tr><td>HiGHS result</td><td>215 full + 1 partial, gap 0.89%</td><td>600 s, MIP gap 1%</td></tr>
+  </tbody>
+</table>
+
+<h2 id="inputs">Input catalog</h2>
+<p class="lede">Everything the MIP reads is a key in <code>inputParams</code>. A-B numbers below are the dumped / photographed values.</p>
+<h3>Sets</h3>
+<table>
+  <thead><tr><th>Key</th><th>A-B</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td><code>containerList</code></td><td>1…6</td><td>Trucks \(v\)</td></tr>
+    <tr><td><code>layerList</code></td><td>1, 2</td><td>Layers \(l\)</td></tr>
+    <tr><td><code>positionList</code></td><td>1…30</td><td>Pads \(p\)</td></tr>
+    <tr><td><code>fullPalletList</code> / <code>partialPalletList</code></td><td>plt_4 … plt_219 / plt_221, plt_222</td><td>Pallet ids \(i\)</td></tr>
+    <tr><td><code>materialList</code></td><td>31 SKUs</td><td>For the SKU-count penalty</td></tr>
+    <tr><td><code>frontPositionList</code></td><td>1–14</td><td>Pads that can contribute to front cargo</td></tr>
+    <tr><td><code>rearPositionList</code></td><td>13–30</td><td>Pads that can contribute to rear cargo</td></tr>
+    <tr><td><code>leftPositionList</code> / <code>rightPositionList</code></td><td>odds / evens</td><td>Side-to-side balance</td></tr>
+    <tr><td><code>door_posn</code></td><td>30, 29</td><td>Shorter height</td></tr>
+  </tbody>
+</table>
+<h3>Per-pallet data</h3>
+<table>
+  <thead><tr><th>Key</th><th>Example</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td><code>fullPalletDemandByMaterialBatch</code></td><td>plt_178 → 20</td><td>How many copies of that pallet exist</td></tr>
+    <tr><td><code>palletWeightDict</code></td><td>plt_12 → 1190 lb</td><td>Weight of one copy</td></tr>
+    <tr><td><code>palletHeightDict</code></td><td>plt_12 → 3.827 ft</td><td>Stack height add</td></tr>
+    <tr><td><code>palletMaterialDict</code></td><td>plt_12 → 409509005</td><td>SKU; drives 2× fill if listed in priority</td></tr>
+    <tr><td><code>partialFractionValueForPartialPallet</code></td><td>leftover cases / cases per pallet</td><td>Partial scores as a fraction of a full</td></tr>
+    <tr><td><code>stackFactorg2/g3/g4Pallet</code></td><td>G3 if stack factor = 2</td><td>Warehouse stacking class</td></tr>
+  </tbody>
+</table>
+<h3>Objective knobs</h3>
+<table>
+  <thead><tr><th>Key</th><th>A-B</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td><code>container_priority</code></td><td>800, 700, 600, 500, 400, 300</td><td>First-truck bias</td></tr>
+    <tr><td><code>priorityIncentive</code></td><td>2</td><td>Listed SKUs score 2× the fill term</td></tr>
+    <tr><td><code>skuPriorityIncentive</code></td><td>26 of 31 materials, ranks 1 / 2 / 3 / 5</td><td>Membership turns on the 2×; the rank number is unused on trucks</td></tr>
+    <tr><td><code>max_prior_full / max_prior_prtl</code></td><td>from Excel YES / Balance Pallets</td><td>Upper bound on extra \(y^{\text{prior}}\) bonus</td></tr>
+    <tr><td><code>sku_penalty</code> × <code>sku_penalty_factor</code></td><td>1 × 3</td><td>Cost of using more than 31 distinct SKUs (across trucks)</td></tr>
+  </tbody>
+</table>
+<p class="note"><code>palletProfitDict</code> is in the dump (10/rank on some markets). Original Pyomo does not use it. First-truck loading is <code>container_priority</code>, not profit.</p>
+
+<h2 id="floor">Floor map — 30 pads, groups A B C D</h2>
+<p class="lede">
+  Odd pads are the left wall, even pads the right wall. Nose is pad 1–2. Door is 29–30.
+  Click a highlight to see which pads an axle or compact-packing rule cares about.
+</p>
+<div class="row" style="margin-bottom:0.6rem">
+  <button type="button" onclick="highlight('all')">All pads</button>
+  <button type="button" onclick="highlight('front')">Front A+C</button>
+  <button type="button" onclick="highlight('rear')">Rear B+D</button>
+  <button type="button" onclick="highlight('split')">Split 13/14 (0.5 each)</button>
+  <button type="button" onclick="highlight('door')">Door height</button>
+  <button type="button" onclick="highlight('seed')">Compact seed 12</button>
+  <button type="button" onclick="highlight('left')">Left (odds)</button>
+  <button type="button" onclick="highlight('right')">Right (evens)</button>
+</div>
+<div class="legend">
+  <span><i class="sw A"></i>A front-left</span>
+  <span><i class="sw C"></i>C front-right</span>
+  <span><i class="sw B"></i>B rear-left</span>
+  <span><i class="sw D"></i>D rear-right</span>
+  <span>Gold outline = current highlight</span>
+</div>
+<div class="panel">
+  <div class="floor-wrap">
+    <div class="truck">
+      <div class="nose">Nose · pads 1–2</div>
+      <div class="lanes" id="map30"></div>
+      <div class="door-col">Door · 29–30</div>
+    </div>
+  </div>
+  <p class="note" id="map-caption">A-B 30-pad map. Groups match <code>positionGroupDict</code> / balance coefficients.</p>
+</div>
+
+<h2 id="vars">Decision variables</h2>
+<div class="formula">
+\[
+y^{\text{full}}_{v,l,p,i} \in \{0,1\}, \quad
+y^{\text{prtl}}_{v,l,p,j} \in \{0,1\}
+\]
+<p class="note" style="margin:0.4rem 0 0">Pallet \(i\) (full) or \(j\) (partial) assigned to truck \(v\), layer \(l\), pad \(p\).</p>
+\[
+F_{v,l,p} = \sum_i y^{\text{full}}_{v,l,p,i}, \qquad
+P_{v,l,p} = \sum_j y^{\text{prtl}}_{v,l,p,j}
+\]
+<p class="note" style="margin:0.4rem 0 0">Indicators: this spot holds a full / a partial.</p>
+\[
+w_{v,l,p} = \sum_i \omega_i\, y^{\text{full}}_{v,l,p,i} + \sum_j \omega_j\, y^{\text{prtl}}_{v,l,p,j}
+\]
+\[
+h_{v,p} = \sum_{l,i} h_i\, y^{\text{full}}_{v,l,p,i} + \sum_{l,j} h_j\, y^{\text{prtl}}_{v,l,p,j}
+\]
+<p class="note" style="margin:0.4rem 0 0">Weight on that layer of the column, and total stack height of the column.</p>
+</div>
+<p>Also: material counts \(m_{v,s}\), “SKU present” binaries, \(y^{\text{prior}}\) bonuses, and (ocean only) milk-run terms.</p>
+
+<h2 id="obj">Objective — load important SKUs on the first trucks</h2>
+<p class="lede">Maximise a fill score. HiGHS minimises, so the code stores the negated coefficients. Live Pyomo 4-term fill:</p>
+<div class="formula">
+\[
+\begin{aligned}
+\max \quad
+&\sum_{v,l,p,i}
+  c_v \cdot \pi_i \cdot y^{\text{full}}_{v,l,p,i}
++ \sum_{v,l,p,j}
+  c_v \cdot \pi_j \cdot f_j \cdot y^{\text{prtl}}_{v,l,p,j} \\
+&+ \sum_i \rho\, y^{\text{prior,full}}_i
++ \sum_j \rho\, y^{\text{prior,prtl}}_j
+- \lambda \cdot E
+\end{aligned}
+\]
+</div>
+<table>
+  <thead><tr><th>Symbol</th><th>A-B</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>\(c_v\)</td><td>800…300</td><td><code>container_priority[v]</code> — truck 1 is worth most</td></tr>
+    <tr><td>\(\pi_i\)</td><td>2 if SKU is in <code>skuPriorityIncentive</code>, else 1</td><td><code>priorityIncentive</code> multiplier</td></tr>
+    <tr><td>\(f_j\)</td><td>e.g. leftover/cases</td><td>Partial counts as a fraction of a full</td></tr>
+    <tr><td>\(\rho\)</td><td>2</td><td>Same incentive on the extra \(y^{\text{prior}}\) term</td></tr>
+    <tr><td>\(E\)</td><td>≥ 0</td><td>How many SKUs over <code>unique_sku_n = 31</code></td></tr>
+    <tr><td>\(\lambda\)</td><td>1 × 3 = 3</td><td><code>sku_penalty × sku_penalty_factor</code></td></tr>
+  </tbody>
+</table>
+<div class="panel">
+  <h3 style="margin-top:0">Worked scores — put one pallet on a truck</h3>
+  <div class="row">
+    <label>Truck
+      <select id="obj-truck" onchange="scoreObj()">
+        <option value="800">1 (800)</option>
+        <option value="700">2 (700)</option>
+        <option value="600">3 (600)</option>
+        <option value="500">4 (500)</option>
+        <option value="400">5 (400)</option>
+        <option value="300">6 (300)</option>
+      </select>
+    </label>
+    <label>SKU
+      <select id="obj-sku" onchange="scoreObj()">
+        <option value="2">409509005 — listed (×2)</option>
+        <option value="1">406818000 — not listed (×1)</option>
+      </select>
+    </label>
+    <label>Kind
+      <select id="obj-kind" onchange="scoreObj()">
+        <option value="1">full</option>
+        <option value="0.5">partial, fraction 0.5</option>
+      </select>
+    </label>
+  </div>
+  <p id="obj-out" class="ex"></p>
+  <p class="note">A listed SKU on truck 1 scores \(800 \times 2 = 1600\). The same pallet on truck 6 scores \(300 \times 2 = 600\). That is why priority freight lands on the first trucks — not because of <code>palletProfitDict</code>.</p>
+</div>
+<p>The older fill (no extra ×2 for listed SKUs) is commented in <code>_build_objective</code>, not deleted. Milk-run (position × priority³) is built only when ocean mode is on; A-B trucks do not use it. The integer rank 1/2/3/5 in <code>skuPriorityIncentive</code> is unused on the truck fill — only membership matters.</p>
+
+<h2 id="cons">Constraints</h2>
+<p class="lede">Each block is one family of rows in the HiGHS matrix. Examples use A-B pads and the HiGHS load where it helps.</p>
+
+<h3 id="c-weight">1. Total cargo weight</h3>
+<div class="formula">\[ \sum_{l,p} w_{v,l,p} \le 42000 \quad \forall v \]</div>
+<div class="ex">
+  Truck 1 loaded 41,936 lb (99.8% of cap). One more ~1,200 lb pallet on that truck is infeasible even if a pad is free.
+</div>
+
+<h3 id="c-demand">2. Each physical pallet used at most once</h3>
+<div class="formula">
+\[
+\sum_{v,l,p} y^{\text{full}}_{v,l,p,i} \le d_i
+\qquad
+\sum_{v,l,p} y^{\text{prtl}}_{v,l,p,j} \le d_j
+\]
+</div>
+<div class="ex">
+  <code>plt_178</code> has demand 20. The solver may leave some on the dock (≤, not =). Ocean historically used equality; trucks use ≤ so leftover pallets are allowed when weight/axles bind.
+</div>
+
+<h3 id="c-spot">3. At most one pallet per spot</h3>
+<div class="formula">\[ F_{v,l,p} + P_{v,l,p} \le 1 \]</div>
+<p>A “spot” is the triple (truck, layer, pad). Two pallets can share a <em>pad</em> only by stacking: layer 1 and layer 2 of pad 8.</p>
+<div class="panel">
+  <p class="note" style="margin-top:0">Column of pad 8 on truck 1 (from the HiGHS instructions) — legal: two spots, same \(p\), different \(l\).</p>
+  <div class="stack">
+    <div class="col">
+      <div class="box full">L2 · 409161406<br>997 lb · 3.80 ft</div>
+      <div class="box full">L1 · 409509005<br>1190 lb · 3.83 ft</div>
+      <div class="floorline"></div>
+      <small style="text-align:center;color:var(--muted)">pad 8</small>
+    </div>
+  </div>
+</div>
+
+<h3 id="c-compact">4. Compact packing (no holes from the seed)</h3>
+<p>On when <code>enforce_compact_packing</code> is Yes. Seed \(p^\star = 12\). Occupancy \(O_{v,l,p} = F+P\).</p>
+<div class="formula">
+\[
+\begin{aligned}
+p &< p^\star &&\Rightarrow& O_{v,l,p} &\le O_{v,l,p+1} \\
+p &> p^\star &&\Rightarrow& O_{v,l,p} &\le O_{v,l,p-1} \\
+p &\le p^\star,\ p\text{ even} &&\Rightarrow& O_{v,l,p} &= O_{v,l,p-1}
+\end{aligned}
+\]
+Layer 2 at the seed only after layer 1 at both ends is used:
+\[
+O_{v,2,12} \le O_{v,1,1}, \qquad O_{v,2,12} \le O_{v,1,30}
+\]
+</div>
+<p>In words: fill from pad 12 toward the nose and toward the door; pair left/right in the front half; do not start a second layer at 12 until pads 1 and 30 on layer 1 are occupied.</p>
+<div class="panel">
+  <div class="row">
+    <button type="button" class="primary" onclick="compactStep()">Step fill</button>
+    <button type="button" onclick="compactReset()">Reset</button>
+    <span class="tag" id="compact-label">empty</span>
+  </div>
+  <p class="note">Layer 1 only, seed = 12. Gold = occupied after this step.</p>
+  <div class="floor-wrap">
+    <div class="truck">
+      <div class="nose">Nose</div>
+      <div class="lanes" id="map-compact"></div>
+      <div class="door-col">Door</div>
+    </div>
+  </div>
+</div>
+<div class="ex">
+  Illegal: occupy pad 10 on layer 1 while pad 11 is empty — that is a hole between 10 and the seed 12.
+  Legal: 12, then 11 and 12 together (even \(p\) must match \(p-1\)), then 10, …
+</div>
+
+<h3 id="c-partial">5. Nothing stacks on a partial</h3>
+<div class="formula">
+\[
+P_{v,l,p} + P_{v,l+1,p} \le 1, \qquad
+P_{v,l,p} + F_{v,l+1,p} \le 1
+\]
+</div>
+<div class="panel">
+  <div class="stack">
+    <div class="col">
+      <div class="box prtl" style="opacity:0.35;outline:2px dashed #c45c5c">illegal L2</div>
+      <div class="box prtl">partial L1</div>
+      <div class="floorline"></div>
+      <small style="text-align:center;color:var(--muted)">forbidden</small>
+    </div>
+    <div class="col">
+      <div class="box full">full L2</div>
+      <div class="box full">full L1</div>
+      <div class="floorline"></div>
+      <small style="text-align:center;color:var(--muted)">allowed</small>
+    </div>
+    <div class="col">
+      <div class="box prtl">partial L2</div>
+      <div class="box full">full L1</div>
+      <div class="floorline"></div>
+      <small style="text-align:center;color:var(--muted)">allowed</small>
+    </div>
+  </div>
+  <p class="note">A-B partials are <code>plt_221</code> / <code>plt_222</code> (SKU 409561210). HiGHS loaded one of them, on truck 6, not as a base under a full.</p>
+</div>
+
+<h3 id="c-height">6. Stack height, with a shorter door</h3>
+<div class="formula">
+\[
+h_{v,p} \le
+\begin{cases}
+3.5 & p \in \{29,30\} \\
+9 & \text{otherwise}
+\end{cases}
+\quad\text{(ft, A-B)}
+\]
+</div>
+<p>Typical pallet ~3.8 ft, so door pads are single-layer. Body pads fit two (~7.6 &lt; 9). Volume % in the UI uses the same door exception in the denominator:</p>
+<div class="formula">
+\[
+\text{volume \%}
+= \frac{\sum_p h_{v,p}}{9\cdot(30-2) + 2\cdot 3.5}
+= \frac{\sum_p h_{v,p}}{259}
+\]
+</div>
+<div class="ex">Truck 1 reported 65.3% volume. Using \(30\times 9 = 270\) would understate cube by about 4 points — that was the screenshot mismatch, not pallet L×W.</div>
+
+<h3 id="c-crush">7. Crushing — heavier below</h3>
+<div class="formula">\[ w_{v,l,p} \ge \sum_{s>l} w_{v,s,p} \]</div>
+<p>On two layers this is “layer 1 at least as heavy as layer 2.”</p>
+<div class="panel">
+  <div class="row">
+    <button type="button" onclick="crushOk()">Legal (1190 under 997)</button>
+    <button type="button" onclick="crushBad()">Illegal (997 under 1190)</button>
+    <span class="tag" id="crush-tag">legal</span>
+  </div>
+  <div class="stack" id="crush-viz"></div>
+</div>
+
+<h3 id="c-balance">8. Left / right balance</h3>
+<p><code>front_to_back_tolerance = 0</code> on A-B, so the front/back pair is <em>not</em> added (the code only inserts those rows when the tolerance is positive). Side-to-side is on at 10%:</p>
+<div class="formula">
+\[
+(1-0.1)\, W^{\text{right}}_v
+\le W^{\text{left}}_v
+\le (1+0.1)\, W^{\text{right}}_v
+\]
+</div>
+<p>Left = odd pads, right = even pads. Click “Left” / “Right” on the map above. This is cargo left vs right, not a physics roll moment.</p>
+
+<h3 id="c-axle">9. Front / rear cargo (the MIP “axles”)</h3>
+<p>Not a geometric fifth-wheel calculation. Each pad has coefficients in <code>positionGroupBalanceCoefficientDict</code>:</p>
+<div class="formula">
+\[
+\begin{aligned}
+\text{front}_v &= \sum_{l,p} (A_{p}+C_{p})\, w_{v,l,p} \le 19920 \\
+\text{rear}_v  &= \sum_{l,p} (B_{p}+D_{p})\, w_{v,l,p} \le 22080
+\end{aligned}
+\]
+</div>
+<p>Pads 1–12: coefficient 1 on A or C. Pads 15–30: 1 on B or D. Pads <strong>13 and 14</strong> are 0.5 / 0.5, so they count on both axles and front+rear still equals total cargo.</p>
+<div class="panel">
+  <p class="note" style="margin-top:0">HiGHS A-B cargo vs the 19,920 / 22,080 caps. All six trucks sit just under both.</p>
+  <div id="axle-bars"></div>
+</div>
+<div class="ex">
+  Truck 1: front 19,874 (46 lb under) + rear 22,062. The MIP treats a 1,190 lb pallet on pad 1 the same as on pad 12. Physically pad 1 is much closer to the fifth wheel — see the optional check at the end.
+</div>
+
+<h3 id="c-sku">10. SKU-count tracking and penalty</h3>
+<div class="formula">
+\[
+m_{v,s} = \text{how many pallets of SKU }s\text{ on truck }v
+\]
+\[
+u_{v,s} \ge m_{v,s} / (2\cdot 30), \quad u_{v,s}\in\{0,1\}
+\]
+\[
+E \ge \sum_v \sum_s u_{v,s} - 31
+\]
+</div>
+<p>\(E\) is penalised in the objective. A-B has 31 materials and <code>unique_sku_n = 31</code>, so spreading SKUs across extra trucks is slightly discouraged. It does not forbid a SKU.</p>
+
+<h3 id="c-prior">11. Priority bonus cannot exceed assignments</h3>
+<div class="formula">
+\[
+0 \le y^{\text{prior,full}}_i \le \min\Big(d^{\text{prior}}_i,\ \sum_{v,l,p} y^{\text{full}}_{v,l,p,i}\Big)
+\]
+</div>
+<p>Excel YES / Balance Pallets writes <code>max_prior_*</code>. The bonus term \(\rho y^{\text{prior}}\) only pays for pallets that were actually loaded, and only up to that cap. Equality was wrong: with <code>max_prior = 0</code> it would have forced every assignment to 0.</p>
+
+<h3 id="c-vdr">12. VDR stacking groups G2 / G3 / G4</h3>
+<p>Warehouse classes. The HiGHS A-B CLI leaves these <em>off</em> (<code>vdr_stacking_rules=False</code>). They exist in the model for other markets.</p>
+<table>
+  <thead><tr><th>Group</th><th>Layer 1</th><th>Layer 2+</th><th>Stack on top?</th></tr></thead>
+  <tbody>
+    <tr><td>G1 (default)</td><td>yes</td><td>yes</td><td>yes</td></tr>
+    <tr><td>G2</td><td>required</td><td>no</td><td>yes</td></tr>
+    <tr><td>G3</td><td>yes</td><td>yes</td><td>no</td></tr>
+    <tr><td>G4</td><td>required</td><td>no</td><td>no</td></tr>
+  </tbody>
+</table>
+<p>A-B encodes stack-factor 2 as G3 in the input (nothing on top). Turning VDR on would forbid a second pallet on those columns.</p>
+
+<h2 id="flags">What is actually on for the A-B truck solve</h2>
+<table>
+  <thead><tr><th>Switch</th><th>A-B HiGHS</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Crushing</td><td><span class="ok">on</span></td><td>Always in truck mode</td></tr>
+    <tr><td>Side-to-side 10%</td><td><span class="ok">on</span></td><td><code>side_to_side_tolerance = 0.1</code></td></tr>
+    <tr><td>Front-to-back</td><td><span class="warn">off</span></td><td>tolerance 0, rows skipped</td></tr>
+    <tr><td>Axle cargo caps</td><td><span class="ok">on</span></td><td>19,920 / 22,080 present</td></tr>
+    <tr><td>Compact packing</td><td><span class="ok">on</span></td><td>CSV <code>yes</code></td></tr>
+    <tr><td>G2/G3/G4</td><td><span class="warn">off</span></td><td>CLI default</td></tr>
+    <tr><td>Milk-run</td><td><span class="warn">off</span></td><td>Ocean only</td></tr>
+    <tr><td>Max SKU hard cap</td><td><span class="warn">off</span></td><td>Penalty only</td></tr>
+  </tbody>
+</table>
+
+<h2 id="out">Outputs — loading instructions</h2>
+<p>One row per placed pallet: truck, sequence, pad, layer, material, cases, weight, height, partial flag, stacking group.</p>
+<table>
+  <thead><tr><th>Container</th><th>Seq</th><th>Pos</th><th>Layer</th><th>Material</th><th>Weight</th><th>Height</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>1</td><td>1</td><td>1</td><td>409509005</td><td>1190</td><td>3.83</td></tr>
+    <tr><td>1</td><td>7</td><td>7</td><td>1</td><td>120202500</td><td>906</td><td>4.19</td></tr>
+    <tr><td>1</td><td>8</td><td>7</td><td>2</td><td>120202500</td><td>906</td><td>4.19</td></tr>
+    <tr><td>1</td><td>10</td><td>8</td><td>2</td><td>409161406</td><td>997</td><td>3.80</td></tr>
+  </tbody>
+</table>
+<p class="note">File: <code>optimization_results/loading_instructions_highs_im_input_A_B.csv</code>. Sequence is write order, not a second MIP decision.</p>
+
+<h2 id="summary">Outputs — results summary (UI columns)</h2>
+<table>
+  <thead>
+    <tr><th>Truck</th><th>Full</th><th>Partial</th><th>Util plt %</th><th>Util vol %</th><th>Util wt %</th><th>Front</th><th>Rear</th><th>Limits</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>44</td><td></td><td>73.3</td><td>65.3</td><td>99.8</td><td>19874</td><td>22062</td><td>19920 / 22080</td></tr>
+    <tr><td>2</td><td>37</td><td></td><td>61.7</td><td>53.1</td><td>99.7</td><td>19835</td><td>22021</td><td></td></tr>
+    <tr><td>3</td><td>35</td><td></td><td>58.3</td><td>50.9</td><td>98.4</td><td>19326</td><td>22021</td><td></td></tr>
+    <tr><td>4</td><td>34</td><td></td><td>56.7</td><td>50.2</td><td>99.5</td><td>19880</td><td>21930</td><td></td></tr>
+    <tr><td>5</td><td>34</td><td></td><td>56.7</td><td>50.0</td><td>98.9</td><td>19760</td><td>21798</td><td></td></tr>
+    <tr><td>6</td><td>31</td><td>1</td><td>53.3</td><td>46.9</td><td>99.7</td><td>19850</td><td>22009</td><td></td></tr>
+  </tbody>
+</table>
+<p>
+  Pallet util = loaded / \(30\times 2 = 60\).
+  Weight util = cargo / 42,000.
+  Volume util = \(\sum h_p / 259\) as above.
+  Front/rear = the A+C / B+D sums, not DOT tandem readings.
+</p>
+
+<h2 id="physics">Optional post-solve physics check (not a constraint)</h2>
+<p>
+  After the MIP, each used pad can be mapped to a bay center \(X\) (15 bays × 40″ along the trailer) and cargo can be split with a kingpin / rear-tandem lever.
+  That is <em>not</em> in the MIP. On this A-B load the shortcut is close: trucks 2–6 within ~2%; truck 1 about 1,560 lb more on the kingpin than A+C reports, because 2-high weight sat on bays 4–6 (true nose-middle) while pads 1 and 12 still count equally as “front.”
+</p>
+<div class="panel">
+  <p class="note" style="margin-top:0">LoadMax front cargo vs physics kingpin share (tare off). Same total weight; only the split changes.</p>
+  <div id="phys-bars"></div>
+  <p class="note">Assumed 53′ geometry — not in the Excel dump. Script: <code>python examples/compare_axle_geometry.py</code>.</p>
+</div>
+
+<p class="note">Code: <code>loadmax/container_loading_highs.py</code> · original: <code>loadmax/future_addons/optimizer_pyomo.py</code> · A-B inputs: <code>data/im_input_A_B.csv</code>.</p>
+</main>
+</div>
+<footer>LoadMax · slot MIP explainer · A-B 30-pad truck · HiGHS</footer>
+<script>
+  const GROUPS = {
+    1:"A",2:"C",3:"A",4:"C",5:"A",6:"C",7:"A",8:"C",9:"A",10:"C",11:"A",12:"C",
+    13:"B",14:"D",15:"B",16:"D",17:"B",18:"D",19:"B",20:"D",21:"B",22:"D",
+    23:"B",24:"D",25:"B",26:"D",27:"B",28:"D",29:"B",30:"D"
+  };
+  function makePad(n) {
+    const el = document.createElement("div");
+    el.className = "pad " + GROUPS[n];
+    el.dataset.n = String(n);
+    const bay = Math.ceil(n / 2);
+    el.innerHTML = n + "<small>bay " + bay + "</small>";
+    el.title = "Pad " + n + " · group " + GROUPS[n] + " · bay " + bay;
+    return el;
+  }
+  function lane(ids) {
+    const row = document.createElement("div");
+    row.className = "lane";
+    ids.forEach((n) => row.appendChild(makePad(n)));
+    return row;
+  }
+  function fillMap(hostId) {
+    const host = document.getElementById(hostId);
+    const left = [1,3,5,7,9,11,13,15,17,19,21,23,25,27,29];
+    const right = [2,4,6,8,10,12,14,16,18,20,22,24,26,28,30];
+    host.appendChild(lane(left));
+    host.appendChild(lane(right));
+  }
+  fillMap("map30");
+  fillMap("map-compact");
+
+  function highlight(mode) {
+    document.querySelectorAll("#map30 .pad").forEach((el) => {
+      const n = +el.dataset.n;
+      let on = true;
+      if (mode === "front") on = n <= 14;
+      if (mode === "rear") on = n >= 13;
+      if (mode === "split") on = n === 13 || n === 14;
+      if (mode === "door") on = n === 29 || n === 30;
+      if (mode === "seed") on = n === 12;
+      if (mode === "left") on = n % 2 === 1;
+      if (mode === "right") on = n % 2 === 0;
+      el.classList.toggle("on", on);
+      el.classList.toggle("seed", n === 12);
+    });
+    const cap = {
+      all: "All 30 pads. Gold = highlight.",
+      front: "Front cargo A+C: pads 1–12 full, 13–14 half.",
+      rear: "Rear cargo B+D: pads 15–30 full, 13–14 half.",
+      split: "Pads 13 and 14 split 0.5 / 0.5 so front+rear = total cargo.",
+      door: "Pads 29–30: stack height ≤ 3.5 ft (one layer).",
+      seed: "Compact packing seed first_plt_n = 12. Fill toward 1 and toward 30.",
+      left: "Odd pads — left wall, used in 10% side-to-side balance.",
+      right: "Even pads — right wall."
+    };
+    document.getElementById("map-caption").textContent = cap[mode] || cap.all;
+  }
+  highlight("all");
+
+  const compactOrder = [12,11,10,9,8,7,6,5,4,3,2,1,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30];
+  let compactN = 0;
+  function paintCompact() {
+    const used = new Set(compactOrder.slice(0, compactN));
+    document.querySelectorAll("#map-compact .pad").forEach((el) => {
+      const n = +el.dataset.n;
+      el.classList.toggle("empty", compactN > 0 && !used.has(n));
+      el.classList.toggle("on", used.has(n));
+      el.classList.toggle("seed", n === 12);
+    });
+    const lab = document.getElementById("compact-label");
+    lab.textContent = compactN === 0 ? "empty" : compactN + " / 30 occupied (layer 1)";
+  }
+  function compactStep() {
+    compactN = Math.min(30, compactN + 1);
+    paintCompact();
+  }
+  function compactReset() {
+    compactN = 0;
+    paintCompact();
+  }
+  paintCompact();
+
+  function scoreObj() {
+    const c = +document.getElementById("obj-truck").value;
+    const pi = +document.getElementById("obj-sku").value;
+    const f = +document.getElementById("obj-kind").value;
+    const s = c * pi * f;
+    document.getElementById("obj-out").innerHTML =
+      "Fill score for this one assignment: <strong>" + s +
+      "</strong> &nbsp;=&nbsp; " + c + " × " + pi + " × " + f +
+      ". Listed SKU on truck 1 is 1600; same SKU on truck 6 is 600.";
+  }
+  scoreObj();
+
+  function renderCrush(ok) {
+    const host = document.getElementById("crush-viz");
+    const tag = document.getElementById("crush-tag");
+    if (ok) {
+      host.innerHTML = '<div class="col"><div class="box full">L2 · 997 lb</div><div class="box full">L1 · 1190 lb</div><div class="floorline"></div></div>';
+      tag.textContent = "legal · 1190 ≥ 997";
+      tag.className = "tag on";
+    } else {
+      host.innerHTML = '<div class="col"><div class="box prtl">L2 · 1190 lb</div><div class="box full" style="background:#5a3a3a">L1 · 997 lb</div><div class="floorline"></div></div>';
+      tag.textContent = "illegal · 997 < 1190";
+      tag.className = "tag";
+      tag.style.color = "var(--bad)";
+    }
+  }
+  function crushOk() { renderCrush(true); }
+  function crushBad() { renderCrush(false); }
+  crushOk();
+
+  const axle = [
+    { t:1, f:19874, r:22062 },
+    { t:2, f:19835, r:22021 },
+    { t:3, f:19326, r:22021 },
+    { t:4, f:19880, r:21930 },
+    { t:5, f:19760, r:21798 },
+    { t:6, f:19850, r:22009 }
+  ];
+  const hostA = document.getElementById("axle-bars");
+  axle.forEach((row) => {
+    const fp = Math.min(100, row.f / 19920 * 100);
+    const rp = Math.min(100, row.r / 22080 * 100);
+    const d = document.createElement("div");
+    d.innerHTML =
+      '<div class="bar-row"><span>T' + row.t + ' F</span><div class="bar"><span style="width:' + fp +
+      '%;background:#2d6cb5"></span></div><span>' + row.f + '</span></div>' +
+      '<div class="bar-row"><span>T' + row.t + ' R</span><div class="bar"><span style="width:' + rp +
+      '%;background:#c45c3a"></span></div><span>' + row.r + '</span></div>';
+    hostA.appendChild(d);
+  });
+
+  const phys = [
+    { t:1, lm:19874, ph:21435 },
+    { t:2, lm:19835, ph:20115 },
+    { t:3, lm:19326, ph:20087 },
+    { t:4, lm:19880, ph:20229 },
+    { t:5, lm:19760, ph:20127 },
+    { t:6, lm:19850, ph:20259 }
+  ];
+  const hostP = document.getElementById("phys-bars");
+  phys.forEach((row) => {
+    const a = row.lm / 22000 * 100;
+    const b = row.ph / 22000 * 100;
+    const d = document.createElement("div");
+    d.innerHTML =
+      '<div class="bar-row"><span>T' + row.t + '</span><div class="bar">' +
+      '<span style="width:' + a + '%;background:#2d6cb5;opacity:.85" title="LoadMax"></span></div>' +
+      '<span>LM ' + row.lm + '</span></div>' +
+      '<div class="bar-row"><span></span><div class="bar">' +
+      '<span style="width:' + b + '%;background:#d4a017"></span></div>' +
+      '<span>Phys ' + row.ph + '</span></div>';
+    hostP.appendChild(d);
+  });
+</script>
+</body>
+</html>

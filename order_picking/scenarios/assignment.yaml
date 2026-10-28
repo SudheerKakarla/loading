@@ -1,0 +1,13 @@
+# Assignment scenarios for one dock. Phase 1 is shared.
+# remove drops the first picker ids of that equipment.
+# deadline_minutes is added to every numeric cutoff (minutes from the shift start).
+scenarios:
+  - name: base
+  - name: one_forklift_down
+    remove:
+      forklift: 1
+  - name: two_jacks_down
+    remove:
+      pallet_jack: 2
+  - name: deadlines_30_min_earlier
+    deadline_minutes: -30

@@ -1,0 +1,13 @@
+picker_id,equipment_type,busy_minutes,available_minutes,utilisation_pct
+PJ01,pallet_jack,0.0,480.0,0.0
+PJ02,pallet_jack,56.56923076923077,480.0,11.78525641025641
+PJ03,pallet_jack,0.0,480.0,0.0
+PJ04,pallet_jack,0.0,480.0,0.0
+PJ05,pallet_jack,0.0,480.0,0.0
+PJ06,pallet_jack,0.0,480.0,0.0
+PJ07,pallet_jack,0.0,480.0,0.0
+PJ08,pallet_jack,378.8769230769231,480.0,78.93269230769232
+FK01,forklift,140.1076923076923,480.0,29.189102564102562
+FK02,forklift,478.83846153846156,480.0,99.75801282051283
+FK03,forklift,0.0,480.0,0.0
+FK04,forklift,24.546153846153846,480.0,5.113782051282052

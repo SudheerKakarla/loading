@@ -1,0 +1,4 @@
+cross_id,y,x_min,x_max,one_way
+CA_FRONT,0,0,20,
+CA_MID,15,0,20,
+CA_BACK,30,0,20,

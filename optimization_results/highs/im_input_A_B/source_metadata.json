@@ -1,0 +1,8 @@
+{
+  "solver": "highs",
+  "scenario": "im_input_A_B",
+  "migrated_from": "optimization_results root filenames",
+  "created_utc": "2026-08-24T08:19:12.668452+00:00",
+  "input_sha256": "3c1ecbfe620f2f52274b75d490b0babfe183c7dc61f351b34d8619bc60930bd9",
+  "input_csv": "C:\\Users\\sudhe\\LoadMax\\data\\im_input_A_B.csv"
+}

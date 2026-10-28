@@ -28,3 +28,8 @@ Desktop.ini
 *.log
 *.sol
 docs/console.log
+optimization_results/minizinc_work/
+optimization_results/minizinc/**/*.fzn
+optimization_results/minizinc/**/*.ozn
+optimization_results/scenarios/**/*.fzn
+optimization_results/scenarios/**/*.ozn

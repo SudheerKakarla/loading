@@ -1,0 +1,7 @@
+from_location,to_location,travel_time
+DEPOT,L1,3
+DEPOT,L2,10
+L1,DEPOT,3
+L1,L2,13
+L2,DEPOT,10
+L2,L1,13

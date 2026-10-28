@@ -3,3 +3,6 @@ pandas
 numpy 
 prettytable
 scipy>=1.9
+# Route arrows and the shift Gantt in order_picking/plot_picking.py
+matplotlib>=3.8
+

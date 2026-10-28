@@ -1,0 +1,2 @@
+stage,status,incumbent,bound,solver_abs_gap,mip_rel_gap_used,mip_abs_gap_used,objective_upper_used,runtime,time_limit_hit,stop
+weighted,0,400424.4,400424.4,0.0,9.511363225645678e-07,0.6,630824.4,1.1856816000072286,False,proven

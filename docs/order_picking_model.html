@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Order picking — model, travel time, and assignment math</title>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["$", "$"], ["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"]],
+        tags: "ams"
+      },
+      options: { skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"] }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2330;
+      --ink: #e8eef5;
+      --muted: #9aa8b8;
+      --line: #2c3a4d;
+      --gold: #d4a017;
+      --ok: #3d9b6e;
+      --chip: #243044;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    a { color: #8ec5ff; }
+    header {
+      padding: 2.2rem 1.5rem 1.4rem;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #1a2838 0%, var(--bg) 100%);
+    }
+    header h1 { margin: 0 0 0.35rem; font-size: 1.7rem; font-weight: 650; }
+    header p { margin: 0.35rem 0 0; color: var(--muted); max-width: 54rem; }
+    .layout-page {
+      display: grid;
+      grid-template-columns: 230px 1fr;
+      max-width: 88rem;
+      margin: 0 auto;
+    }
+    nav {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      padding: 1.2rem 1rem 2rem 1.4rem;
+      border-right: 1px solid var(--line);
+      height: 100vh;
+      overflow: auto;
+      font-size: 0.86rem;
+    }
+    nav a {
+      display: block;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 0.22rem 0;
+    }
+    nav a:hover { color: var(--gold); }
+    nav .g {
+      margin-top: 0.85rem;
+      color: var(--gold);
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    main { padding: 1.4rem 1.6rem 4rem; min-width: 0; }
+    h2 { font-size: 1.28rem; margin: 2.1rem 0 0.55rem; }
+    h3 { font-size: 1.05rem; margin: 1.4rem 0 0.4rem; }
+    p { color: #c5d0dc; }
+    .lede { color: var(--muted); margin-top: 0; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.7rem;
+      margin: 0.8rem 0 1.1rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.85rem 0.95rem;
+    }
+    .card strong {
+      display: block;
+      color: var(--gold);
+      font-size: 0.74rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      background: var(--panel);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 0.6rem 0 1.1rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.48rem 0.7rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      color: var(--gold);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    code {
+      background: var(--chip);
+      padding: 0.05rem 0.32rem;
+      border-radius: 4px;
+      font-size: 0.85em;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+    .note { font-size: 0.9rem; color: var(--muted); }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1rem 1.1rem 1.15rem;
+      margin: 0.8rem 0 1.3rem;
+    }
+    .formula {
+      background: #121a24;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.7rem 0.9rem;
+      overflow-x: auto;
+      margin: 0.5rem 0 0.9rem;
+    }
+    pre {
+      background: #121a24;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.8rem 1rem;
+      overflow-x: auto;
+      color: var(--ink);
+      font-size: 0.86rem;
+      line-height: 1.45;
+    }
+    pre code { background: transparent; padding: 0; }
+    .ex {
+      border-left: 3px solid var(--gold);
+      padding: 0.15rem 0 0.15rem 0.8rem;
+      margin: 0.5rem 0 0.9rem;
+    }
+    ol.eq { color: #c5d0dc; }
+    footer { color: var(--muted); font-size: 0.8rem; padding: 1.5rem; text-align: center; }
+    @media (max-width: 900px) {
+      .layout-page { grid-template-columns: 1fr; }
+      nav { display: none; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Order picking math model</h1>
+  <p>
+    Strict order picking for one wave: each fulfilled order is one closed walk from a
+    depot, then one picker is chosen for that whole order. This page is the model in
+    <code>order_picking/</code>. Truck pads, axles, and pallet fill are a different
+    model, written up in <a href="loadmax_model.html">loadmax_model.html</a>.
+  </p>
+  <p class="note">
+    Display math uses MathJax. Open the file in a browser with network access so the
+    formulas render. The source of each display is LaTeX.
+  </p>
+</header>
+<div class="layout-page">
+<nav>
+  <div class="g">Overview</div>
+  <a href="#what">What it decides</a>
+  <a href="#pipeline">How the two programs meet</a>
+  <a href="#symbols">Symbols</a>
+  <div class="g">Data into the model</div>
+  <a href="#travel">Travel time \(T_{ij}\)</a>
+  <a href="#priority">Priority weight \(w_o\)</a>
+  <div class="g">Phase 1</div>
+  <a href="#duration">Route duration \(\tau_o\)</a>
+  <a href="#onestop">One pick location</a>
+  <a href="#heuristic">Default tour</a>
+  <a href="#exact">Exact tour</a>
+  <div class="g">Phase 2</div>
+  <a href="#eligible">Who may take an order</a>
+  <a href="#milp">Assignment MILP</a>
+  <a href="#objective">Objective</a>
+  <a href="#constraints">Constraints</a>
+  <a href="#staged">Staged release</a>
+  <a href="#gap">Stopping gap</a>
+  <a href="#docks">Two docks</a>
+  <a href="#example">Worked numbers</a>
+  <a href="#config">Crew and wave settings</a>
+  <a href="#outside">Outside this model</a>
+  <a href="#plots">How to visualize</a>
+  <a href="#files">Where the equations live</a>
+</nav>
+<main>
+
+<h2 id="what">What it decides</h2>
+<p class="lede">One picker finishes one order before starting another. Storage locations are dedicated: each line names one fixed slot.</p>
+<div class="cards">
+  <div class="card"><strong>Phase 1</strong>For each order, a closed walk from the depot you pass in, through that order’s distinct slots, and back.</div>
+  <div class="card"><strong>Phase 2</strong>Which of those orders to release this wave, and which eligible picker does each one.</div>
+  <div class="card"><strong>Score</strong>Sum of priority weights of released orders, minus optional penalties. <code>--staged-assignment</code> reports that same release-weight sum.</div>
+  <div class="card"><strong>Feasible by default</strong>Releasing nothing has objective \(0\). A tight shift shows up as orders left out. <code>--require-must-ship</code> is infeasible when those jobs cannot all fit.</div>
+</div>
+<p>
+  A typical order has about 6 to 15 lines. The routing problem for one order is that small set of slots plus the depot.
+  Phase 2 never rebuilds the walk. It treats each order’s duration \(\tau_o\) as a fixed number of minutes.
+</p>
+
+<h2 id="pipeline">How the two programs meet</h2>
+<p>
+  <code>build_travel_matrix.py</code> turns the warehouse map into a table.
+  <code>order_picking_optimizer.py</code> only reads that table. Aisles, coordinates, and the
+  nearest-depot label stay outside the picker solve.
+</p>
+<div class="formula">
+\[
+\underbrace{\text{aisles, cross-aisles, slots, depots}}_{\text{layout CSVs}}
+\;\longrightarrow\;
+T_{ij}
+\;\longrightarrow\;
+\tau_o
+\;\longrightarrow\;
+\max_{y,x}\;
+\sum_o w_o y_o - \beta \sum_r u_r
+\]
+</div>
+<table>
+  <tr><th>File the caller passes</th><th>Column the solver reads</th><th>Symbol</th></tr>
+  <tr><td><code>travel_times.csv</code></td><td><code>from_location</code>, <code>to_location</code>, <code>travel_time</code></td><td>\(T_{ij}\)</td></tr>
+  <tr><td>Order lines</td><td><code>order_id</code>, <code>location_id</code>, optional <code>pick_time</code></td><td>stops of \(o\), \(p_o\)</td></tr>
+  <tr><td>Orders</td><td><code>priority_weight</code> or cutoff, tier, <code>must_ship</code></td><td>\(w_o\)</td></tr>
+  <tr><td>Pickers</td><td>equipment, max weight, max volume, <code>shift_duration</code></td><td>\(S_r\), eligibility</td></tr>
+  <tr><td><code>inputs/crew.csv</code></td><td>equipment, count, kilograms, volume, shift minutes. The wave builder expands this into <code>pickers.csv</code></td><td>the \(R\) and \(S_r\) of a generated wave</td></tr>
+  <tr><td><code>inputs/wave_settings.csv</code></td><td><code>name</code>, <code>value</code>. Order count, pick time, line counts, heavy share, priority mix</td><td>the orders a generated wave writes</td></tr>
+  <tr><td>Call argument</td><td><code>depot_id</code></td><td>\(d\)</td></tr>
+</table>
+<p>
+  <code>depot_assignment.csv</code> (<code>location_id</code>, <code>depot_id</code>, <code>round_trip_time</code>)
+  is a label you use when you choose which depot and which lines to pass. The optimizer has no reader for that file.
+  One call still builds one tour from the single <code>depot_id</code> on that call.
+</p>
+
+<h2 id="symbols">Symbols</h2>
+<table>
+  <tr><th>Symbol</th><th>Meaning</th><th>In the code</th></tr>
+  <tr><td>\(o \in O\)</td><td>Order in this wave</td><td><code>order_id</code></td></tr>
+  <tr><td>\(r \in R\)</td><td>Picker on shift</td><td><code>picker_id</code></td></tr>
+  <tr><td>\(d\)</td><td>Depot for this solve</td><td><code>depot_id</code></td></tr>
+  <tr><td>\(L_o\)</td><td>Distinct pick slots on order \(o\), depot removed if a line repeats it</td><td><code>location_id</code> values</td></tr>
+  <tr><td>\(T_{ij}\)</td><td>Minutes to walk from \(i\) to \(j\), retrieval included when \(j\) is a slot</td><td><code>travel_time</code></td></tr>
+  <tr><td>\(p_o\)</td><td>Sum of line handling minutes on order \(o\). Missing column means \(0\)</td><td><code>pick_time</code></td></tr>
+  <tr><td>\(\tau_o\)</td><td>Route duration passed to phase 2</td><td><code>route_duration</code></td></tr>
+  <tr><td>\(w_o\)</td><td>Objective weight of releasing order \(o\). Must satisfy \(0 \le w_o \lt 10^{6}\)</td><td><code>priority_weight</code></td></tr>
+  <tr><td>\(\beta\)</td><td>Penalty on workload imbalance. Default \(0\)</td><td><code>balance_weight</code></td></tr>
+  <tr><td>\(S_r\)</td><td>Shift length of picker \(r\), in the same minutes as \(\tau_o\)</td><td><code>shift_duration</code></td></tr>
+  <tr><td>\(y_o\)</td><td>Binary, \(1\) if order \(o\) is released</td><td><code>fulfilled</code></td></tr>
+  <tr><td>\(x_{or}\)</td><td>Binary, \(1\) if picker \(r\) does order \(o\). Created only for eligible pairs</td><td><code>assign</code></td></tr>
+  <tr><td>\(\omega_r\)</td><td>Minutes of work assigned to picker \(r\)</td><td><code>workload</code></td></tr>
+  <tr><td>\(u_r\)</td><td>Absolute gap between \(\omega_r\) and the average workload</td><td><code>imbalance</code></td></tr>
+  <tr><td>\(D_o\)</td><td>Cutoff of order \(o\), minutes from the wave start. A blank cell is no deadline</td><td><code>cutoff_time</code></td></tr>
+  <tr><td>\(s_r\)</td><td>Minute picker \(r\) starts. A missing clock is \(0\)</td><td><code>shift_start</code></td></tr>
+  <tr><td>\(L_o\)</td><td>Minutes order \(o\) finishes after \(D_o\). Never negative. An undated job is \(0\)</td><td><code>late</code></td></tr>
+  <tr><td>\(\pi_o\)</td><td>Lateness tier. \(100\) for a must-ship job, \(1\) otherwise</td><td><code>lateness_tier</code></td></tr>
+  <tr><td>\(\lambda\)</td><td>Weight on tiered lateness. Default \(0\)</td><td><code>--lateness-weight</code></td></tr>
+  <tr><td>\(\gamma\)</td><td>Penalty for a jack-eligible job given to a forklift. Default \(0\)</td><td><code>--prefer-jack</code></td></tr>
+  <tr><td>\(H\)</td><td>Length of one wave in hours. Default \(8\)</td><td><code>wave_hours</code></td></tr>
+</table>
+
+<h2 id="travel">Travel time \(T_{ij}\)</h2>
+<p class="lede">
+  Built once by Dijkstra on aisle centrelines. Phase 1 looks up \(T_{ij}\). It does not see \(x\) and \(y\).
+</p>
+<p>
+  Each aisle is one vertical centreline at a fixed \(x\), from \(y_{\min}\) to \(y_{\max}\).
+  Each cross-aisle is one horizontal centreline at a fixed \(y\), from \(x_{\min}\) to \(x_{\max}\).
+  A slot is a point on its aisle at that slot’s \(y\). Left and right racks at the same \(y\) share that point.
+  There is no \(z\) coordinate. Extra time for an upper level is a larger retrieval time on the slot.
+</p>
+<p>
+  Junctions are the crossings where a cross-aisle \(y\) lies inside an aisle’s \(y\) range and the aisle’s \(x\)
+  lies inside the cross-aisle’s \(x\) range. The depot is snapped to the nearest point on any centreline.
+  The leftover off-centre distance is \(\sigma_d\), in minutes.
+</p>
+<h3>Edge length</h3>
+<p>
+  On one centreline, consecutive nodes \(a\) and \(b\) at positions \(p_a\) and \(p_b\) get a directed walk time
+</p>
+<div class="formula">
+\[
+t(a,b) = \frac{|p_b - p_a|}{s}
+\]
+</div>
+<p>
+  \(s\) is <code>--speed</code>, distance units per minute. Default \(s = 1\), so the number equals distance.
+  A blank <code>one_way</code> puts the edge in both directions. <code>up</code> keeps only increasing \(y\),
+  <code>down</code> only decreasing \(y\), <code>right</code> only increasing \(x\), <code>left</code> only decreasing \(x\).
+  A zero gap is a both-ways edge of length \(0\).
+</p>
+<h3>Shortest walk</h3>
+<p>
+  From each public node (every depot and every slot) Dijkstra computes the least walk time along those edges.
+  Junctions stay inside the graph. If any public pair has no directed walk, the builder stops and writes no table.
+</p>
+<div class="formula">
+\[
+\delta_i(i) = 0,
+\qquad
+\delta_i(j) = \min_{k:\,(k \to j)}\bigl(\delta_i(k) + t(k,j)\bigr)
+\]
+</div>
+<p>The cell written for the picker adds the depot snap and the slot retrieval after Dijkstra:</p>
+<div class="formula">
+\[
+T_{ij}
+= \delta_i(j)
++ \sigma_i\,\mathbf{1}[i \text{ is a depot}]
++ \sigma_j\,\mathbf{1}[j \text{ is a depot}]
++ r_j\,\mathbf{1}[j \text{ is a slot}]
+\]
+</div>
+<p>
+  \(r_j\) is the slot’s own <code>retrieval_time</code> when that cell is filled, including a stored \(0\).
+  A blank cell uses the global <code>--retrieval-time</code>, default \(0\).
+  A walk that ends at a depot does not add retrieval. Item handling is \(p_o\), added later in phase 1.
+  Leave \(r_j = 0\) when the order lines already carry <code>pick_time</code>, so those minutes are counted once.
+</p>
+<h3>Nearest depot label</h3>
+<p>
+  With several depots in one graph, each slot is labeled by the shortest there-and-back walk.
+  Retrieval sits on the slot, so it does not change the winner. Equal costs use the lexicographically smaller depot id.
+</p>
+<div class="formula">
+\[
+d^{\star}(\ell)
+= \operatorname*{arg\,min}_{d \in \mathcal{D}}
+\bigl(T_{d\ell} + T_{\ell d}\bigr)
+\]
+</div>
+
+<h2 id="priority">Priority weight \(w_o\)</h2>
+<p class="lede">
+  A linear weight, applied before phase 2. It is the coefficient of \(y_o\). It is not a rule that clears high-priority orders first.
+</p>
+<p>The solver fills \(w_o\) in this order:</p>
+<ol class="eq">
+  <li>A finite <code>priority_weight</code> already on the row is kept, when it is at least \(0\) and strictly below \(10^{6}\).</li>
+  <li>Otherwise <code>must_ship</code> sets \(w_o = 10^{5}\).</li>
+  <li>Otherwise \(w_o = u_o \cdot m_o\), urgency times the account-tier multiplier.</li>
+  <li>After that, <code>benchmark_mode</code> replaces every weight with \(1\), including a stored weight and a must-ship weight.</li>
+</ol>
+<div class="formula">
+\[
+w_o =
+\begin{cases}
+1 &amp; \text{benchmark mode} \\
+w_o^{\mathrm{given}} &amp; \text{a finite explicit weight was stored} \\
+10^{5} &amp; \text{must-ship, and no explicit weight} \\
+u_o \, m_o &amp; \text{otherwise}
+\end{cases}
+\]
+</div>
+<p>
+  Hours remaining \(h\) come from <code>cutoff_time</code>. A numeric cutoff with no clock means \(h\) is already hours remaining.
+  A datetime cutoff uses \(h =\) cutoff minus <code>now</code>. One wave is \(H\) hours.
+</p>
+<div class="formula">
+\[
+u(h) =
+\begin{cases}
+6 &amp; h \lt 0 \\
+4 &amp; 0 \le h \le H \\
+2 &amp; H \lt h \le 2H \\
+1 &amp; h \gt 2H
+\end{cases}
+\]
+</div>
+<p>
+  With no cutoff, urgency comes from hours already waited, \(q\). That path has no overdue band.
+  \(q\) is <code>wait_time</code>, or <code>now</code> minus <code>queued_since</code>.
+</p>
+<div class="formula">
+\[
+u(q) =
+\begin{cases}
+4 &amp; q \ge 2H \\
+2 &amp; H \le q \lt 2H \\
+1 &amp; q \lt H
+\end{cases}
+\]
+</div>
+<p>
+  Default tier multipliers: <code>key</code> and <code>A</code> are \(2\); <code>standard</code>, <code>B</code>, and <code>C</code> are \(1\);
+  a blank tier is \(1\). <code>key_account</code> true with a blank tier uses <code>key</code>.
+  A boolean tier true uses <code>key</code>, false uses \(1\). Any other name is an error.
+  Pass <code>tier_multipliers</code> to replace the whole table.
+</p>
+<div class="ex">
+  Due this wave and tier key: \(u = 4\), \(m = 2\), so \(w_o = 8\).
+  Overdue and tier standard: \(w_o = 6 \times 1 = 6\).
+  Must-ship with no stored weight: \(w_o = 100000\).
+</div>
+
+<h2 id="duration">Phase 1 — route duration \(\tau_o\)</h2>
+<p>
+  Distinct slots only. Two lines at the same <code>location_id</code> are one stop, and both <code>pick_time</code> values still add into \(p_o\).
+  An order with no slots is an error. A missing pair \(T_{ij}\) is an error.
+</p>
+<div class="formula">
+\[
+p_o = \sum_{\text{lines } k \text{ of order } o} \mathrm{pick\_time}_k
+\]
+</div>
+<div class="formula">
+\[
+\tau_o = \text{(closed-walk minutes from } d \text{ through } L_o \text{)} + p_o
+\]
+</div>
+<p>The depot is node \(0\) inside the tour. Every other node is one slot of \(L_o\).</p>
+
+<h3 id="onestop">One pick location</h3>
+<p>
+  A single slot has no tour choice. The TSP object is not built. Its guard requires at least three nodes
+  (the depot plus two slots), so this case is a direct lookup.
+</p>
+<div class="formula">
+\[
+\tau_o = T_{d\ell} + T_{\ell d} + p_o
+\qquad
+\text{route} = (d,\;\ell,\;d)
+\]
+</div>
+<div class="ex">
+  Sample layout, <code>PACK_A</code> at \((0,0)\), slot <code>L1</code>, speed \(1\), retrieval \(0\):
+  \(T = 3\) each way, so \(\tau = 6\) when \(p_o = 0\).
+</div>
+
+<h3 id="heuristic">Two or more slots — default tour</h3>
+<p>
+  The default <code>phase1_solver</code> is <code>heuristic</code>. It walks the directed matrix.
+  Start at the depot. The opening tour is nearest neighbor: from the current node, step to the closest unvisited slot, then close back to the depot.
+</p>
+<div class="formula">
+\[
+\text{next}(i) = \operatorname*{arg\,min}_{j \in U} T_{ij}
+\]
+</div>
+<p>
+  Then 2-opt. The move reverses the chain of stops from \(\mathrm{next}(i)\) through \(j\).
+  Write that chain \(s_1,\ldots,s_m\) with \(s_1 = \mathrm{next}(i)\) and \(s_m = j\), and write \(d = \mathrm{next}(j)\).
+  The directed gain is the removed walk minus the reversed walk:
+</p>
+<div class="formula">
+\[
+\Delta(i,j)
+= T_{i,s_1} + \sum_{t=1}^{m-1} T_{s_t,s_{t+1}} + T_{s_m,d}
+- \Bigl(
+  T_{i,s_m} + \sum_{t=1}^{m-1} T_{s_{t+1},s_t} + T_{s_1,d}
+\Bigr)
+\]
+</div>
+<p>
+  A one-stop chain reverses nothing, so \(\Delta = 0\). When \(T\) is symmetric the edges along the chain cost the same in both directions and cancel, which leaves the four endpoint terms.
+  A positive \(\Delta\) is the only swap that is applied. The default improver takes the best positive reversal among a neighbor list and repeats.
+  The travel time reported to phase 2 is the directed walk \(\sum_i T_{i,\mathrm{next}(i)}\).
+  If that walk is longer than the nearest-neighbor tour, the nearest-neighbor tour is kept.
+  The neighbor list at a node keeps the \(k\) closest other nodes, with
+</p>
+<div class="formula">
+\[
+k = \max\bigl(1,\; \min(\lfloor \sqrt{n} \rfloor,\; n-1)\bigr)
+\]
+</div>
+<p>
+  \(n = 1 + |L_o|\) is the depot plus the slots. The closed-walk length that becomes the travel part of \(\tau_o\) is
+</p>
+<div class="formula">
+\[
+\sum_{i=0}^{n-1} T_{i,\,\mathrm{next}(i)}
+\]
+</div>
+<p>The printed route lists the nodes from the depot and repeats the depot at the end, so the return leg is visible.</p>
+<div class="ex">
+  Sample layout, depot \((0,0)\), speed \(1\):
+  \(T_{\mathrm{DEPOT},L1} = 3\), \(T_{L1,L2} = 13\), \(T_{L2,\mathrm{DEPOT}} = 10\).
+  The walk \(\mathrm{DEPOT} \to L1 \to L2 \to \mathrm{DEPOT}\) has length \(3+13+10 = 26\).
+  With \(p_o = 0\), \(\tau = 26\).
+</div>
+
+<h3 id="exact">Exact tour — optional SCIP or HiGHS</h3>
+<p>
+  <code>phase1_solver</code> <code>scip</code> or <code>highs</code> solves a directed tour on the same nodes.
+  Every ordered pair \(i \neq j\) has its own binary \(x_{ij}\) and its own cost \(T_{ij}\).
+  A one-way aisle therefore keeps the cheap direction and does not pay the blocked direction.
+  The undirected city model in <code>solve_scip</code> and <code>solve_highs</code> is a separate demo. Warehouse orders do not call it.
+</p>
+<div class="formula">
+\[
+\min \sum_{i \neq j} T_{ij}\, x_{ij}
+\]
+</div>
+<div class="formula">
+\[
+\sum_{j \neq k} x_{kj} = 1
+\qquad
+\sum_{i \neq k} x_{ik} = 1
+\qquad \forall k
+\]
+</div>
+<div class="formula">
+\[
+x_{ij} \in \{0,1\}
+\]
+</div>
+<p>
+  Out-degree 1 and in-degree 1 make the chosen arcs a permutation: one or more directed cycles that cover every node.
+  After each solve, every cycle \(S\) that is a proper subset of the nodes adds a cut, and the model is solved again until one cycle remains.
+</p>
+<div class="formula">
+\[
+\sum_{\substack{i \in S \\ j \notin S}} x_{ij} \ge 1
+\qquad
+\text{for each directed cycle } S \subsetneq \{0,\ldots,n-1\},\; S \neq \emptyset
+\]
+</div>
+<p>
+  The cut says the tour must leave \(S\) at least once.
+  The code adds one cut per cycle of the current solution.
+  \(\tau_o\) is the directed length of the tour that is returned, \(\sum_i T_{i,\mathrm{next}(i)}\), plus \(p_o\).
+</p>
+
+<h2 id="eligible">Phase 2 — who may take an order</h2>
+<p>
+  Equipment and per-order capacity are applied before the MILP. An ineligible pair has no variable \(x_{or}\).
+  That is the same as fixing \(x_{or} = 0\). Because each order is picked alone, capacity is checked per order, not as a sum of orders on the picker.
+</p>
+<div class="formula">
+\[
+(o,r) \in E
+\iff
+\begin{cases}
+\text{the order names no equipment, or it matches picker } r \\
+W_o \le W_r^{\max} \\
+V_o \le V_r^{\max} \text{ when both volumes are present}
+\end{cases}
+\]
+</div>
+<p>
+  If \(E\) contains no picker for order \(o\), then \(y_o\) is forced to \(0\). The result tags that order <code>no_eligible_picker</code>.
+  An order that is eligible but left at \(y_o = 0\) is tagged <code>shift_time_limit_or_priority_tradeoff</code>.
+  <code>--withhold-if-late-at-start</code> (default off) removes a job before the solve when its duration exceeds the window every eligible picker still has before the cutoff. That reason is <code>cannot_meet_cutoff</code>.
+  The window is \(A_r(D_o) = \min(\max(0, D_o - s_r), S_r)\). Jobs removed here are not forced on by <code>--require-must-ship</code>.
+</p>
+
+<h2 id="milp">Assignment MILP</h2>
+<p class="lede">
+  Same model in Gurobi (<code>assignment_solver="gurobi"</code>) and in HiGHS (<code>"highs"</code>, the default).
+  HiGHS minimizes, so its coefficient vector is the negative of the Gurobi maximization. The reported objective is the maximization value.
+</p>
+
+<h3>Variables</h3>
+<div class="formula">
+\[
+y_o \in \{0,1\} \quad \forall o \in O
+\]
+</div>
+<div class="formula">
+\[
+x_{or} \in \{0,1\} \quad \forall (o,r) \in E
+\]
+</div>
+<div class="formula">
+\[
+\omega_r \ge 0, \qquad u_r \ge 0 \quad \forall r \in R
+\]
+</div>
+
+<h3 id="objective">Objective</h3>
+<div class="formula">
+\[
+\max_{y,x,\omega,u}
+\sum_{o \in O} w_o\, y_o
+- \beta \sum_{r \in R} u_r
+\]
+</div>
+<p>
+  HiGHS solves the equivalent minimization
+</p>
+<div class="formula">
+\[
+\min
+-\sum_{o \in O} w_o\, y_o
++ \beta \sum_{r \in R} u_r
+\]
+</div>
+<p>
+  and returns the negation of that optimal value, so both solvers report the same score.
+  With the default \(\beta = 0\) the imbalance variables stay in the model and drop out of the score.
+  The command-line flag <code>--share-shift</code> sets \(\beta = 0.001\). One ordinary order, weight \(1\), is worth \(1000\) minutes of unevenness, so an order that still fits is not dropped to even the shift.
+  Setting every \(w_o = 1\) makes the score a count of released orders.
+</p>
+<p>
+  Two optional penalties use the same units as \(w_o\). Both default to \(0\).
+  \(J\) is the set of pairs where the job is eligible for a pallet jack and the picker is a forklift.
+</p>
+<div class="formula">
+\[
+\max
+\sum_{o \in O} w_o\, y_o
+- \beta \sum_{r \in R} u_r
+- \lambda \sum_{o \in O} \pi_o L_o
+- \gamma \sum_{(o,r) \in J} x_{or}
+\]
+</div>
+<p>
+  \(\lambda\) is <code>--lateness-weight</code>. \(\gamma\) is <code>--prefer-jack</code>.
+  Finish times follow earliest-deadline order on each picker, starting at minute \(0\). Undated jobs go last and are not late.
+  \(D_o\) is minutes from that start. The release weight, including the flat \(100000\), stays in the first sum.
+  On this weighted sum, keep \(\gamma\) below the smallest job weight so a tie moves toward a jack and the job stays released.
+  Under <code>--staged-assignment</code> any positive \(\gamma\) minimises the count of pairs in \(J\) with coefficient \(1\).
+</p>
+<p><strong>Finish time and lateness,</strong> present when \(\lambda &gt; 0\) on this weighted solve, and on the lateness stage below.</p>
+<div class="formula">
+\[
+C_o \ge \sum_{o' \preceq o} \tau_{o'}\, x_{o'r} - M(1 - x_{or})
+\qquad \forall (o,r) \in E
+\]
+</div>
+<div class="formula">
+\[
+L_o \ge C_o - D_o - M^{\mathrm{late}}(1 - y_o),
+\qquad L_o \ge 0
+\]
+</div>
+<p>
+  The sum is the durations of order \(o\) and of the jobs that deadline order places before it on picker \(r\).
+  \(M\) is the longest shift. \(M^{\mathrm{late}} = M + \max(0, -\min D)\).
+  HiGHS writes the finish row as \(C_o - \text{prefix} - M x_{or} \ge -M\).
+  Dropped jobs are not charged lateness.
+</p>
+<div class="ex">
+  One picker, shift \(10\). Order BIG has \(\tau = 9\), \(w = 5\). Orders SMALL1 and SMALL2 have \(\tau = 4\), \(w = 1\) each.
+  BIG alone scores \(5\). The two small orders together use \(8 \le 10\) and score \(2\).
+  The weighted solve releases BIG. Benchmark mode sets every weight to \(1\) and releases the two small orders, score \(2\).
+</div>
+
+<h3 id="constraints">Constraints</h3>
+<p><strong>One picker if the order is released.</strong> An unreleased order has every \(x_{or} = 0\).</p>
+<div class="formula">
+\[
+\sum_{r:\,(o,r)\in E} x_{or} = y_o
+\qquad \forall o \in O
+\]
+</div>
+<p><strong>Workload is the sum of assigned route durations.</strong></p>
+<div class="formula">
+\[
+\omega_r = \sum_{o:\,(o,r)\in E} \tau_o\, x_{or}
+\qquad \forall r \in R
+\]
+</div>
+<p><strong>Shift limit.</strong></p>
+<div class="formula">
+\[
+\omega_r \le S_r
+\qquad \forall r \in R
+\]
+</div>
+<p>
+  <strong>Imbalance</strong> is the absolute deviation from the mean workload. It is a soft term through \(\beta\), not a hard cap.
+</p>
+<div class="formula">
+\[
+\bar\omega = \frac{1}{|R|} \sum_{q \in R} \omega_q
+\]
+</div>
+<div class="formula">
+\[
+u_r \ge \omega_r - \bar\omega,
+\qquad
+u_r \ge \bar\omega - \omega_r
+\qquad \forall r \in R
+\]
+</div>
+<p>
+  Together those two inequalities are \(u_r \ge |\omega_r - \bar\omega|\).
+  With \(\beta \gt 0\) the objective pushes each \(u_r\) down to that absolute gap.
+  \(y = 0\), \(x = 0\), \(\omega = 0\), \(u = 0\) satisfies every row, with objective \(0\).
+</p>
+<p class="note">
+  Gurobi writes the mean as a linear expression inside the two imbalance rows.
+  HiGHS writes the same rows with share \(1/|R|\) on every workload column.
+  Both are the pair of inequalities above.
+</p>
+
+<h2 id="staged">Staged release</h2>
+<p class="lede">
+  <code>--staged-assignment</code> is off by default. The weighted sum above stays the live objective.
+  The flag replaces that one sum with five stages. Each stage locks the objective value it reached, with tolerance \(10^{-6}\), so a later stage may swap jobs of equal value.
+  The lock uses that incumbent. The public score is still the release-weight sum of the jobs that remain.
+</p>
+<ol class="eq">
+  <li>Maximise the count of must-ship jobs. The absolute stop is \(0.5\). The stage is skipped when the wave has none.</li>
+  <li>Maximise \(\sum w_o y_o\) over the other jobs. Must-ship weights stay out of this sum, so equal \(100000\) jobs can still swap under the count lock. When the work exceeds the shift, weights decide which ordinary jobs stay out.</li>
+  <li>Minimise \(\sum \pi_o L_o\) on the released set, including when \(\lambda = 0\). No deadlines makes this stage a no-op.</li>
+  <li>Minimise \(\sum u_r\), only when \(\beta &gt; 0\).</li>
+  <li>Minimise the count of pairs in \(J\), only when \(\gamma &gt; 0\). The coefficient is \(1\), so the flag tie-breaks after release.</li>
+</ol>
+<p>
+  A stage that hits the time limit keeps its incumbent, and the next lock can sit short of the true maximum.
+  <code>--require-must-ship</code> is a separate constraint \(y_o = 1\) on every must-ship job. It is not this staged mode.
+  When those jobs cannot all fit, <code>is_optimal</code> is false, <code>infeasible_must_ship</code> is true, and <code>status_reason</code> is <code>required_must_ship_jobs_cannot_all_fit</code>.
+  The printed line is “Required must-ship jobs cannot all fit.”
+  A plan that releases nothing without that flag stays feasible.
+  Staged assignment leaves a must-ship job out when it does not fit and still returns a plan.
+</p>
+<div class="ex">
+  One picker, shift \(100\). J1 has cutoff \(10\), duration \(8\), weight \(2\). J2 has cutoff \(12\), duration \(8\), weight \(2\).
+  With \(\lambda = 1\), both jobs score \(0\) once lateness is charged, and one job scores \(2\).
+  The weighted path releases one job. The staged path releases both and reports \(4\) late minutes. The public score is \(4\).
+</div>
+<div class="ex">
+  On the 16-truck wave, lateness weight \(1\) and a \(60\) second stage limit, <code>--prefer-jack 0.1</code> only turns on stage 5.
+  PACK_A stayed \(84\) of \(84\), score \(400424.4\). PACK_B stayed \(87\) of \(87\), score \(700414\). Late minutes stayed \(0\). The jack count proved at \(0\).
+  Twelve forklift-only jobs stayed on forklifts. Each dock stayed inside \(480\) minutes. Across both docks PJ04 is \(506.5\) and PJ08 is \(504.7\), so the minute sum raises.
+  Reports are <code>outputs/chunk_assign/gap_wave/staged_prefer_jack/</code>. The default stays \(\gamma = 0\).
+</div>
+
+<h2 id="gap">Stopping gap</h2>
+<p class="lede">
+  The stop is an absolute tolerance of a tenth of the smallest positive weight, raised above solver noise when that still sits below half a job.
+  A caller <code>mip_gap</code> is stored as <code>gap_requested</code> and does not loosen the solve.
+</p>
+<div class="formula">
+\[
+w_{\min} = \min \{ w_o : w_o &gt; 0 \}
+\qquad
+\text{target} = 0.1\, w_{\min}
+\qquad
+\text{noise} = 10^{-6}\, U
+\]
+</div>
+<div class="formula">
+\[
+\text{absolute} =
+\begin{cases}
+\text{target} &amp; \text{if noise} \ge w_{\min} \\
+\min\bigl(\max(\text{target},\, 10 \cdot \text{noise}),\, 0.5\, w_{\min}\bigr) &amp; \text{otherwise}
+\end{cases}
+\]
+</div>
+<p>
+  \(U\) is an upper bound on the objective. The sum of the absolute coefficients is not that bound once lateness or imbalance is continuous.
+  On the weighted objective, \(U\) is the sum of the positive release weights, plus \(|\beta|\) times twice the shift lengths, plus \(|\lambda|\) times \(\sum \pi_o M^{\mathrm{late}}\) over dated jobs, plus \(|\gamma|\) times the number of pairs in \(J\).
+  Twice the shift lengths bounds the sum of absolute deviations from the mean.
+  The ordinary stage uses only the ordinary weights, so a \(100000\) coefficient is outside that stage’s scale.
+  The must-ship count stage stops at an absolute gap of \(0.5\). The jack stage uses the smaller of \(0.5\) and the weight tolerance.
+</p>
+<p>
+  SciPy’s MILP wrapper accepts <code>mip_rel_gap</code> only, so HiGHS is given <code>mip_rel_gap = absolute / max(U, 1)</code>.
+  Gurobi is given <code>MIPGap = 0</code> and <code>MIPGapAbs</code> equal to the absolute tolerance, because Gurobi stops when either gap is met.
+  Each solve records <code>stop</code>: <code>time_limit</code> when the limit hit, <code>no_solution</code> when no usable plan was returned, <code>proven</code> when the achieved absolute gap is within \(10^{-6}\) or within \(1\%\) of the target, and <code>gap_reached</code> otherwise.
+  A staged result uses <code>time_limit</code> if any stage hit the limit, and otherwise the last stage’s stop.
+  The weighted path discards a solve that is not usable. A staged plan keeps a time-limit incumbent.
+</p>
+<div class="ex">
+  On 2026-10-21 the 16-truck wave was solved again with \(\lambda = 1\) and a \(60\) second limit on each stage.
+  Reports are under <code>outputs/chunk_assign/gap_wave/weighted/</code> and <code>outputs/chunk_assign/gap_wave/staged/</code>.
+  Both paths released all \(84\) PACK_A jobs and all \(87\) PACK_B jobs, including <code>TRK02-J02</code>, <code>TRK14-J09</code>, <code>TRK14-J15</code>, <code>TRK16-J01</code>, and <code>TRK16-J03</code>.
+  Late minutes were \(0\). Every stage stopped <code>proven</code> with achieved absolute gap \(0\).
+  Weighted PACK_B finished in \(1.47\) seconds. Its absolute stop was \(1.6\) on an upper bound of \(1{,}074{,}814\), and the objective was \(700414\), the full release weight.
+  Staged PACK_B ordinary finished in \(0.02\) seconds. Its absolute stop was \(0.32\) on an upper bound of \(414\).
+  The shared-crew minute sum passed. The weighted path can still drop a job when lateness costs more than its weight.
+</div>
+
+<h2 id="docks">Two docks</h2>
+<p>
+  Each picker call takes one <code>depot_id</code> and sees every picker in the file.
+  <code>python source/run_docks.py</code> solves each depot folder, writes that dock’s utilisation from <code>shift_duration</code>, then sums busy minutes and compares the sum with that shift.
+  A picker more than \(0.0001\) minute past the shift raises. The 2026-10-21 prefer-jack plan is that case: PJ04 at \(506.5\) minutes and PJ08 at \(504.7\), against \(480\).
+  A pass is the minute total. Clock overlap, and the \(1.1\)-minute walk between docks \(72\) m apart at speed \(65\), stay outside the screen. The check does not rebuild the assignment.
+  Files that were already written can be checked with <code>python source/assignment_reports.py</code> and one <code>utilisation.csv</code> per dock.
+</p>
+<pre><code>python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inputs/layout_warehouse/pickers.csv --travel inputs/layout_warehouse/travel_times.csv --out outputs/chunk_assign/docks --lateness-weight 1 --time-limit 60</code></pre>
+<p class="note">
+  Add <code>--staged-assignment</code> for the five-stage release. The single-dock optimizer is still <code>python source/order_picking_optimizer.py</code> with one <code>--depot</code>.
+</p>
+
+<h2 id="example">Worked numbers from the two-aisle map</h2>
+<p>
+  These rows are <code>order_picking/inputs/layout_small/</code>. Aisles at \(x = 0\) and \(x = 4\), both from \(y = 0\) to \(y = 10\). Cross-aisles at \(y = 0\) and \(y = 10\).
+  <code>L1</code> on the first aisle at \(y = 3\). <code>L2</code> on the second at \(y = 6\). Speed \(1\). Retrieval \(0\).
+  The runnable warehouse, six aisles and thirty slots, is <code>inputs/layout_example/</code>.
+</p>
+<table>
+  <tr><th>From</th><th>To</th><th>\(T_{ij}\)</th></tr>
+  <tr><td>DEPOT \((0,0)\)</td><td>L1</td><td>\(3\)</td></tr>
+  <tr><td>DEPOT</td><td>L2</td><td>\(10\)</td></tr>
+  <tr><td>L1</td><td>L2</td><td>\(13\)</td></tr>
+  <tr><td>L2</td><td>DEPOT</td><td>\(10\)</td></tr>
+</table>
+<div class="formula">
+\[
+\tau(L1,L2) = 3 + 13 + 10 + p_o = 26 + p_o
+\]
+</div>
+<p>Two pack stations on that map, <code>PACK_A</code> at \((0,0)\) and <code>PACK_B</code> at \((4,0)\):</p>
+<table>
+  <tr><th>Slot</th><th>Round trip via PACK_A</th><th>Round trip via PACK_B</th><th>\(d^{\star}\)</th></tr>
+  <tr><td>L1</td><td>\(6\)</td><td>\(14\)</td><td>PACK_A</td></tr>
+  <tr><td>L2</td><td>\(20\)</td><td>\(12\)</td><td>PACK_B</td></tr>
+</table>
+<p>
+  A call with both slots and <code>depot_id = PACK_A</code> still builds one tour from <code>PACK_A</code>.
+  On this map that tour is also \(26\) minutes, because <code>PACK_A</code> sits on the same point as the sample depot.
+</p>
+
+<h2 id="outside">Outside this model</h2>
+<ul>
+  <li>Pallet ids, cases, stack height, trailer pads, axle weight, and the LoadMax fill score. Those stay in the truck model.</li>
+  <li>Choosing the depot inside phase 1 or phase 2, and splitting one order across depots.</li>
+  <li>Batching several orders into one walk, zone picking, and a second location for the same item.</li>
+  <li>A \(z\) edge or a separate stop for the left and right rack. Upper levels and awkward slots are \(r_j\).</li>
+  <li>Item handling inside \(T_{ij}\). That handling is \(p_o\).</li>
+  <li>A ranking that clears every higher weight before any lower weight. <code>--staged-assignment</code> is must-ship count, then the other jobs by weight, then lateness. The default remains one weighted sum, and must-ship stays the finite weight \(10^{5}\) inside that sum.</li>
+  <li>One model that assigns both docks together, a loading sequence, a cap on pallets waiting at the dock, aisle congestion, a stock check, and a mid-shift re-plan. <code>run_docks.py</code> sums busy minutes after the two solves. A pass is that total.</li>
+</ul>
+
+<h2 id="plots">How to visualize</h2>
+<p class="lede">
+  Static PNGs from <code>order_picking/visualizer/plot_picking.py</code>. They draw a solved route, every picker’s routes on the warehouse floor, and a solved shift.
+  They do not change the optimizer.
+</p>
+<p>
+  matplotlib is listed in the repo <code>requirements.txt</code> for these pictures. Install it with the rest of the project, from the repo root:
+</p>
+<pre><code>pip install -r requirements.txt</code></pre>
+<p>
+  Run the commands from <code>order_picking/</code>. <code>inputs/layout_example/</code> is the six-aisle warehouse. <code>inputs/layout_small/</code> is the two-aisle picture used in the worked numbers. Saved assignments and PNG exports are under <code>outputs/</code>. The two browser pages are <code>visualizer/warehouse.html</code> and <code>visualizer/assignment.html</code>.
+</p>
+<h3>One order’s walk</h3>
+<p>
+  Gray lines are the aisle and cross-aisle centrelines. Arrows are the shortest directed walk between consecutive stops.
+  A marker is a stop. <code>--route</code> is the visit order from Phase 1, depot first and last.
+</p>
+<p>
+  The two-aisle command puts the depot at \((0, 0)\), which is already on aisle A1. DEPOT → L1 is the segment from \((0, 0)\) to \((0, 3)\). Its length is 3, and the matrix cell is 3. The closed walk \(3 + 13 + 10 = 26\) uses that same on-centre depot.
+  A depot that sits off the centreline is a separate first segment, from the depot point onto the aisle, and then the centreline walk. Those lengths add up to the matrix time when speed is 1 and retrieval is 0. On this map a depot at \((-1, 0)\) makes DEPOT → L1 length \(1 + 3 = 4\), and the matrix cell is 4. An earlier check that reported 6 used a different map: the slot was at \(y = 5\), so the offset plus the aisle was \(1 + 5 = 6\).
+  The warehouse depot is \((0, -2)\), two units in front of A1. That offset is in <code>inputs/layout_example/depots.csv</code> and in <code>travel_times.csv</code>. A3 runs up only. <code>L-A3-01</code> to <code>L-A3-04</code> is 18. The return is 50, up to the back cross-aisle and down a two-way aisle.
+  Retrieval time and line <code>pick_time</code> are minutes at the stop. They are not drawn.
+  A step with no walk is a dashed red line labeled “no walk”, and the picture still finishes. A depot name in the middle of the route is named under the picture. That walk is drawn. It is not a second depot chosen by Phase 1.
+</p>
+<pre><code>python visualizer/plot_picking.py route --aisles inputs/layout_small/aisles.csv --cross-aisles inputs/layout_small/cross_aisles.csv --locations inputs/layout_small/locations.csv --depot-id DEPOT --depot-x 0 --depot-y 0 --route DEPOT L1 L2 DEPOT --out outputs/layout_small/route.png</code></pre>
+<p>
+  Several pack stations on the two-aisle map use <code>--depots inputs/layout_small/depots.csv</code> instead of <code>--depot-id</code>, <code>--depot-x</code>, and <code>--depot-y</code>.
+</p>
+<h3>The shift</h3>
+<p>
+  One row per picker. The gray bar is <code>shift_duration</code>. Colored bars are the assigned orders, packed from time zero in the row order of the assignments file.
+  That order is assumed so the picture has a left-to-right sequence. Phase 2 does not choose it, and the chart title says so. The empty part of the gray bar is idle time. Names after <code>--left-out</code> are printed under the chart.
+</p>
+<p>
+  The warehouse shift is <code>inputs/layout_example/pickers.csv</code>. P1 and P2 are pallet jacks at 2500 kg and volume 2.0. P3 is a forklift at 5000 kg and volume 4.0. Each shift is 480 minutes.
+  O4 is 3200 kg and volume 3.2 and names a forklift, so it stays on P3. A jack cannot take that order even when the equipment cell is blank.
+  <code>outputs/layout_example/assignments.csv</code> is the default solve, balance weight 0: O1, O2, O3, O5, and O6 on P1 (433 minutes) and P2 idle, score 100006.
+  <code>outputs/layout_example/assignments_shared.csv</code> is <code>--share-shift</code>, balance weight 0.001: P1 has O3 (98.5 minutes), P2 has O2 and O5 (194), and P3 has O1, O4, and O6 (212.5). The score stays 100006. The forklift also takes light orders when <code>required_equipment</code> is blank.
+  A fresh solve at balance weight 0 can split the pallet-jack orders across P1 and P2 and still score 100006.
+  Blank equipment cells in <code>orders.csv</code> are no equipment requirement.
+</p>
+<pre><code>python visualizer/plot_picking.py gantt --pickers inputs/layout_example/pickers.csv --assignments outputs/layout_example/assignments.csv --out outputs/layout_example/gantt.png</code></pre>
+<h3>Picker routes on the floor</h3>
+<p>
+  One panel per picker, with the aisle and cross-aisle centrelines behind every panel.
+  Each assigned order is its own trip from the depot and back, in its own color. Arrows follow the directed centreline walk, so a one-way aisle takes the long way back.
+  Trips that share an aisle are shifted onto parallel lanes so both stay visible.
+  The command solves the wave, then draws those walks. It does not chain a picker’s orders into one tour, and the caption under the picture says so.
+  This command solves with the default balance weight of 0. Two pickers who can both take an order are interchangeable, so one of them may be left idle when the orders fit on the other. O4 still needs the forklift, because it is 3200 kg and names that equipment. <code>--share-shift</code> is the assignment file used by the HTML pages, not this floor picture.
+  Orders left out of the wave are named under the picture and are not drawn. A picker with no jobs still has a panel.
+  A step with no walk is a dashed red line.
+  The square is the depot. The warehouse depot is \((0, -2)\).
+</p>
+<pre><code>python visualizer/plot_picking.py floor --aisles inputs/layout_example/aisles.csv --cross-aisles inputs/layout_example/cross_aisles.csv --locations inputs/layout_example/locations.csv --orders inputs/layout_example/orders.csv --items inputs/layout_example/order_items.csv --pickers inputs/layout_example/pickers.csv --travel inputs/layout_example/travel_times.csv --depot-id DEPOT --depot-x 0 --depot-y -2 --out outputs/layout_example/floor.png</code></pre>
+<h3>Interactive pages</h3>
+<p>
+  Two HTML files share one Scenario dropdown. Open either in a browser. No server is required. Choosing a scenario redraws that layout and that shift.
+  <code>warehouse.html</code> lists the pickers and their orders. Choose one order to draw that trip on the aisle centrelines. The map frames that walk. Scroll zooms toward the pointer, drag moves the floor, and Reset shows the whole building. Numbers at the stops are the visit order, including the depot at the start and at the end. The side panel on both pages shows that order's minutes, its weight and volume against the picker's per-trip limits, and the picker's used minutes against the shift. On the shared plan, O5 is 2200 kg of P2's 2500 kg jack.
+  <code>assignment.html</code> is the shift chart. The gray bar is the shift. Choose a bar to read that order, then open its walk.
+  Pass <code>--assignments</code> to read a saved solution, and <code>--scenario-id</code> with <code>--label</code> to put that solve in the dropdown. The same <code>--out-dir visualizer</code> keeps every scenario on the one pair of pages. Omit <code>--assignments</code> and the command solves the wave at balance weight 0.
+  The bar order is packed from time zero for the picture. Phase 2 does not sequence the jobs.
+</p>
+<pre><code>python visualizer/plot_picking.py html --aisles inputs/layout_example/aisles.csv --cross-aisles inputs/layout_example/cross_aisles.csv --locations inputs/layout_example/locations.csv --orders inputs/layout_example/orders.csv --items inputs/layout_example/order_items.csv --pickers inputs/layout_example/pickers.csv --travel inputs/layout_example/travel_times.csv --assignments outputs/layout_example/assignments_shared.csv --depot-id DEPOT --depot-x 0 --depot-y -2 --out-dir visualizer --scenario-id layout_example_shared --label "Six-aisle sample, shared shift"</code></pre>
+<h3 id="config">Crew and wave settings</h3>
+<p>
+  The solver reads a picker file and an order file. It does not read these two configs. <code>python source/build_wave.py --out inputs/layout_wave</code> reads them and writes <code>inputs/layout_wave/</code>. <code>--crew</code> and <code>--settings</code> point at other files. <code>--orders</code> and <code>--seed</code> override <code>n_orders</code> and <code>seed</code>.
+  The six-order sample is not generated from these files. Its shift and ratings stay in <code>inputs/layout_example/pickers.csv</code>.
+</p>
+<p>
+  <code>inputs/crew.csv</code> is one row per machine. <code>count</code> is how many pickers use it. <code>max_weight</code> is kilograms on one trip. <code>shift_duration</code> is that machine’s shift, in minutes. The shipped rows are a 480 minute shift.
+</p>
+<table>
+  <tr><th>equipment_type</th><th>count</th><th>max_weight</th><th>max_volume</th><th>shift_duration</th></tr>
+  <tr><td>pallet_jack</td><td>8</td><td>2500 kg</td><td>2.0</td><td>480 min</td></tr>
+  <tr><td>forklift</td><td>4</td><td>5000 kg</td><td>4.0</td><td>480 min</td></tr>
+</table>
+<p>
+  <code>inputs/wave_settings.csv</code> is one <code>name,value</code> row per knob. Light orders stay <code>light_margin_kg</code> under the lightest machine and start at <code>light_floor_kg</code>. Heavy orders start <code>heavy_over_kg</code> over that machine and stop <code>heavy_margin_kg</code> under the heaviest, and they name the lightest machine that can carry them. A roll below <code>must_ship_share</code> is must-ship. A roll below <code>key_cutoff</code> is key. The rest are standard.
+</p>
+<table>
+  <tr><th>name</th><th>value</th><th>Meaning</th></tr>
+  <tr><td><code>n_orders</code></td><td>300</td><td>Orders written into the wave</td></tr>
+  <tr><td><code>seed</code></td><td>20261010</td><td>Same seed rewrites the same orders</td></tr>
+  <tr><td><code>pick_time</code></td><td>0.5</td><td>Handling minutes on each line</td></tr>
+  <tr><td><code>min_lines</code>, <code>max_lines</code></td><td>2, 6</td><td>Slots visited by one order</td></tr>
+  <tr><td><code>heavy_share</code></td><td>0.15</td><td>Share of orders that need the heavier machine</td></tr>
+  <tr><td><code>light_floor_kg</code></td><td>150</td><td>Lightest generated order</td></tr>
+  <tr><td><code>light_margin_kg</code></td><td>300</td><td>Light orders stop this far under the lightest machine</td></tr>
+  <tr><td><code>heavy_over_kg</code>, <code>heavy_margin_kg</code></td><td>100, 200</td><td>Heavy orders sit between the two machine caps</td></tr>
+  <tr><td><code>light_volume_fill</code>, <code>heavy_volume_fill</code></td><td>0.75, 0.8</td><td>Fraction of that machine’s volume cap used by the formula</td></tr>
+  <tr><td><code>volume_cap_gap</code></td><td>0.1</td><td>Orders stop this far under the volume cap</td></tr>
+  <tr><td><code>must_ship_share</code>, <code>key_cutoff</code></td><td>0.05, 0.25</td><td>Share cutoffs for must-ship and key orders</td></tr>
+  <tr><td><code>must_ship_weight</code>, <code>key_priority</code>, <code>standard_priority</code></td><td>100000, 2, 1</td><td>Priority written on those orders</td></tr>
+  <tr><td><code>wait_min_hours</code>, <code>wait_max_hours</code></td><td>0.2, 6</td><td>Wait time drawn for each order</td></tr>
+</table>
+<p>
+  With those shipped files the builder writes eight jacks and four forklifts, and 300 orders, on the six-aisle map. Fifty orders are over the 2500 kg jack and name a forklift. One order is still one trip.
+  A solve finishes 59 of 300 at balance weight 0, score 1100090, and 60 of 300 with <code>--share-shift</code>. Every picker is already near a full 480 minutes, so sharing changes little. The shift clock on this building is what runs out. The saved file <code>outputs/layout_wave/assignments.csv</code> is the shared plan. <code>warehouse.html</code> and <code>assignment.html</code> stay on the six-order sample above.
+</p>
+<h3>From Python</h3>
+<p>
+  Run this from <code>order_picking/</code> with <code>source</code> and <code>visualizer</code> on <code>PYTHONPATH</code>. The command-line scripts add those folders themselves. <code>solve_order_picking</code> fills <code>result</code>.
+  <code>routes[order_id]["route"]</code> is the visit list. The same command-line entry point is
+  <code>python source/order_picking_optimizer.py</code> with those CSV paths and <code>--depot DEPOT</code>.
+  <code>--assignments-out</code> writes the Gantt CSV from <code>picker_assignments</code>.
+  The drawn walk comes from <code>route_legs</code>. A leg with no polyline is the dashed red “no walk” segment.
+  <code>route_walks</code> is the same geometry and raises when any leg has no polyline.
+</p>
+<pre><code>import pandas as pd
+from order_picking_optimizer import solve_order_picking
+from plot_picking import plot_order_route, plot_picker_routes, plot_shift_gantt
+
+orders = pd.read_csv("inputs/layout_example/orders.csv")
+items = pd.read_csv("inputs/layout_example/order_items.csv")
+pickers = pd.read_csv("inputs/layout_example/pickers.csv")
+travel = pd.read_csv("inputs/layout_example/travel_times.csv")
+aisles = pd.read_csv("inputs/layout_example/aisles.csv")
+cross_aisles = pd.read_csv("inputs/layout_example/cross_aisles.csv")
+locations = pd.read_csv("inputs/layout_example/locations.csv")
+
+result = solve_order_picking(orders, items, pickers, travel, depot_id="DEPOT")
+plot_order_route(
+    aisles, cross_aisles, locations, result["routes"]["O1"]["route"],
+    depot_id="DEPOT", depot_x=0, depot_y=-2, out="route.png",
+)
+plot_picker_routes(
+    aisles, cross_aisles, locations, result,
+    depot_id="DEPOT", depot_x=0, depot_y=-2, pickers=pickers, out="floor.png",
+)
+plot_shift_gantt(result, pickers, out="gantt.png")</code></pre>
+
+<h2 id="files">Where the equations live</h2>
+<table>
+  <tr><th>Equation</th><th>File</th></tr>
+  <tr><td>\(t(a,b)\), Dijkstra, \(T_{ij}\), \(d^{\star}(\ell)\)</td><td><code>order_picking/source/build_travel_matrix.py</code></td></tr>
+  <tr><td>\(u(h)\), \(u(q)\), \(w_o\)</td><td><code>compute_priority_weight</code> in <code>order_picking/source/order_picking_optimizer.py</code></td></tr>
+  <tr><td>One-slot \(\tau_o\), \(p_o\), nearest neighbor, \(\Delta(i,j)\)</td><td><code>route_order</code> and <code>tsp_open_solvers.py</code></td></tr>
+  <tr><td>Directed tour: out-degree 1, in-degree 1, leave-\(S\) cut</td><td><code>solve_directed_scip</code> and <code>solve_directed_highs</code> in <code>tsp_open_solvers.py</code>. <code>solve_scip</code> and <code>solve_highs</code> stay the undirected city demo</td></tr>
+  <tr><td>Maximization of \(\sum w_o y_o - \beta \sum u_r - \lambda \sum \pi_o L_o - \gamma \sum_J x_{or}\)</td><td><code>_solve_assignment_gurobi</code></td></tr>
+  <tr><td>The same model minimized with negated weights, and the relative-gap denominator \(U\)</td><td><code>order_picking/source/order_picking_highs.py</code></td></tr>
+  <tr><td>Tenth-of-a-job stop, <code>stop</code>, and the minute-sum screen</td><td><code>order_picking/source/assignment_reports.py</code></td></tr>
+  <tr><td>Staged release and <code>--require-must-ship</code></td><td><code>solve_order_assignment</code> in <code>order_picking/source/order_picking_optimizer.py</code></td></tr>
+  <tr><td>Both docks, then the minute-sum screen</td><td><code>order_picking/source/run_docks.py</code></td></tr>
+  <tr><td>Prose form of constraints C1–C9</td><td><code>order_picking/source/order_picking_planning_optimizer_spec.md</code></td></tr>
+  <tr><td>Route arrows, the floor picture, the shift Gantt, and the two HTML pages</td><td><code>order_picking/visualizer/plot_picking.py</code> and <code>order_picking/visualizer/html_picking.py</code> (<code>order_picking/visualizer/warehouse.html</code>, <code>assignment.html</code>). The walk geometry is <code>route_legs</code> in <code>build_travel_matrix.py</code></td></tr>
+</table>
+
+</main>
+</div>
+<footer>
+  Order picking model. Travel times in minutes when speed is distance per minute. Phase 2 default solver is HiGHS. The stop is a tenth of the smallest positive weight. A dock pass is the summed busy minutes. Updated 2026-10-21.
+</footer>
+</body>
+</html>

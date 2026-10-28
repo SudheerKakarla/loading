@@ -1,0 +1,4 @@
+stage,status,incumbent,bound,abs_gap,rel_gap,runtime,time_limit_hit,mip_rel_gap_used,mip_abs_gap_used,objective_upper_used,stop
+must_count,0,4.0,4.0,0.0,0.0,0.0289982000249438,False,0.125,0.5,4.0,proven
+ordinary,0,424.4000000000001,424.4,0.0,0.0,0.015756299952045083,False,0.0002827521206409048,0.12,424.4,proven
+lateness,0,0.0,0.0,0.0,0.0,1.1469891999731772,False,2.6041666666666666e-06,0.6,230400.0,proven
