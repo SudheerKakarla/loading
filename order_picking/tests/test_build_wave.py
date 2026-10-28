@@ -97,6 +97,51 @@ def test_settings_change_pick_time_and_drop_heavy_orders(tmp_path):
     assert set(pickers.shift_duration) == {400.0}
 
 
+def test_allowed_modes_are_copied_onto_each_picker(tmp_path):
+    """A blank allowed_modes cell means every mode. The column stays absent when omitted."""
+    crew = _write_crew(
+        tmp_path,
+        "equipment_type,count,max_weight,max_volume,shift_duration,allowed_modes\n"
+        "pallet_jack,2,2500,2.0,480,pickface\n"
+        "forklift,1,5000,4.0,480,bulk; pickface\n",
+    )
+    folder = write_wave(tmp_path / "wave", n_orders=4, seed=1, crew_path=crew)
+    pickers = pd.read_csv(folder / "pickers.csv")
+    jacks = pickers[pickers.equipment_type == "pallet_jack"]
+    forks = pickers[pickers.equipment_type == "forklift"]
+    assert set(jacks.allowed_modes) == {"pickface"}
+    assert set(forks.allowed_modes) == {"bulk;pickface"}
+    plain = _write_crew(
+        tmp_path,
+        "equipment_type,count,max_weight,max_volume,shift_duration\n"
+        "pallet_jack,1,2500,2.0,480\n"
+        "forklift,1,5000,4.0,480\n",
+    )
+    plain_folder = write_wave(tmp_path / "plain", n_orders=4, seed=1, crew_path=plain)
+    assert "allowed_modes" not in pd.read_csv(plain_folder / "pickers.csv").columns
+    duty = _write_crew(
+        tmp_path,
+        "equipment_type,count,max_weight,max_volume,shift_duration,home_depot,non_pick_minutes\n"
+        "pallet_jack,1,2500,2.0,480,PACK_A,15\n"
+        "forklift,1,5000,4.0,480,,0\n",
+    )
+    stamped = write_wave(tmp_path / "duty", n_orders=4, seed=1, crew_path=duty)
+    pickers = pd.read_csv(stamped / "pickers.csv")
+    assert pickers.loc[pickers.equipment_type == "pallet_jack", "home_depot"].iloc[0] == "PACK_A"
+    assert pickers.loc[pickers.equipment_type == "forklift", "non_pick_minutes"].iloc[0] == pytest.approx(0)
+    assert "max_pallets" not in pickers.columns
+    assert "pick_mode" not in pd.read_csv(stamped / "orders.csv").columns
+    free = load_crew(
+        _write_crew(
+            tmp_path,
+            "equipment_type,count,max_weight,max_volume,shift_duration,allowed_modes\n"
+            "pallet_jack,1,2500,2.0,480,reach\n"
+            "forklift,1,5000,4.0,480,\n",
+        )
+    )
+    assert free.loc[free.equipment_type == "pallet_jack", "allowed_modes"].iloc[0] == "reach"
+
+
 def test_settings_reject_a_missing_or_unknown_name(tmp_path):
     frame = pd.read_csv(default_settings_path())
     short = frame[frame.name != "pick_time"]

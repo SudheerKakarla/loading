@@ -1,0 +1,634 @@
+# Order picking: Maersk TH outbound alignment (implementation design)
+
+Status: READY FOR IMPLEMENTATION once the owner marks it `APPROVED`. Written 2026-10-28 against repository commit `c2f0fd1` (GitHub `SudheerKakarla/loading`, branch `master`).
+
+Audience: a coding agent that makes one change at a time, and the human who reviews each change.
+
+An earlier copy of this file was lost when the workspace re-synced. Commit this file to the repository as soon as it is approved.
+
+## 1. How to use this document
+
+**Scope assumed by this document:**
+
+This document assumes scope B: Engage (the voice pick system) stays in place and `order_picking` becomes a planning layer behind it. The plan is produced as files that a person can load or read. It does not replace voice, send tasks to headsets, or take confirmations.
+
+- If the owner chooses scope A (LoadMax only), do step A0 and stop. Record the decision in `DECISIONS.md`.
+- If the owner chooses scope C (replace voice), steps A0 to A8 still apply. A separate design is needed for task push, confirmation, exceptions, and labor data. It is not in this document.
+
+**Protocol for every step:**
+
+1. Read `AGENTS.md`, `DECISIONS.md`, and `order_picking/TRIED.md` first. A closed try in `TRIED.md` is not repeated unless the input or the rule changed.
+2. Work on one step per chat and one branch. Do not mix steps.
+3. Every new behavior is optional. With the new columns, files, and flags absent, every output must equal the baseline captured in step A0.
+4. Read the "Files to read first" list of the step before editing. Use find-usages on every function whose signature you change.
+5. After editing Python, run `python -m py_compile <files>`. Run `ruff` or `mypy` on the same files if they are on PATH. Run `python -m pytest order_picking` from the repository root.
+6. Do not run the full 16-truck `chunk_model.py` solve (about 475 s) unless the step changes cover logic. Use one or two trucks first.
+7. Update the README sections named in the step. Add a dated block to `DECISIONS.md` and a row to `TRIED.md` only after the user confirms a finding.
+8. Stop at the acceptance criteria. Do not start the next step.
+9. If something important is unknown, stop and ask. Do not guess business numbers.
+
+**Prompt to give the agent for one step:**
+
+> Implement step `<ID>` of `order_picking/DESIGN_maersk_alignment.md`. Follow section 1. Do not start another step. Report the files changed, the tests added, and the test result.
+
+**Repository conventions (from `AGENTS.md`):**
+
+- Use `pathlib.Path`, not `os.path`.
+- New command-line tools use `argparse`.
+- Annotate new public functions. Do not retrofit types elsewhere.
+- Do not add PyYAML. New configuration files are CSV.
+- Do not call `loadmax/future_addons/` (SQL, COOIS, `UtilityClass`).
+- Match surrounding names (`picker_id`, `order_id` for a job, `depot_id`, `PACK_A`).
+- Do not print, commit, or copy secrets.
+- Keep functions small. Prefer small, focused changes.
+
+**Markdown conventions (from the Kenvue instructions):**
+
+- A blank line follows every heading.
+- A line that is only bold text ends with `:` and is followed by a blank line.
+- Mermaid diagrams use spaces, not tabs, and quote bracketed text.
+
+## 2. Glossary
+
+| Term | Meaning | Confidence |
+|---|---|---|
+| Engage | The voice pick system used by Maersk TH outbound. The leader opens it to check data from SAP and enters pickers into it. | Stated in the deck |
+| DDL | A document run by Data Outbound that reserves products against the truck plan and produces a group number and a DDL number. Exact meaning not given in the deck. | Name only |
+| Group number | Produced when the DDL is run. Used here as the grouping key when no truck exists. | Name only |
+| Checking list | Printed product checking list, with the loading dock set by the outbound leader. | Stated |
+| Bulk picking | Whole-pallet picking done with an RT. | Stated |
+| Pick-face (case picking) | Case picking done with a PPT. | Stated |
+| RT | Most likely a reach truck (high-rack pallet truck). Not spelled out in the deck. | Inference, confirm |
+| PPT | Most likely a powered pallet truck (low-level electric pallet truck). Not spelled out in the deck. | Inference, confirm |
+| Staging area | Outbound area where picked pallets wait before loading. No capacity given. | Stated, no number |
+| Pallet changer machine | Machine the wrapped pallets are moved to before loading. | Stated |
+| LoadMax | This repository's truck loader (`loadmax/`). In the deck it runs after picking. | Stated |
+| Job | One carryable trip: a set of pick lines one picker does in one walk from the depot and back. Stored as an `order_id` in `orders.csv`. | Repository |
+| Depot / dock | `depot_id`, for example `PACK_A`. The place a picker starts and returns to. | Repository |
+
+The names RT and PPT are never used as equipment type strings in the code. Equipment types stay `pallet_jack` and `forklift` (or whatever a site file uses). Modes are separate (section 6).
+
+## 3. Source evidence
+
+**Sources:**
+
+| Source | What it gives |
+|---|---|
+| `Maersk Outbound CON FG WH TH process.pptx` (3 slides, text only; the 24 images are small icons) | Current Thai outbound flow, and where LoadMax is added |
+| Email "Fw: LoadMax for outbound" (Narisara Chinpumiwasana, 2025-01-29) | Two options for where LoadMax sits, and the voice cost case |
+| Lucas "Voice Picking Software Selection Guide" PDF | Generic voice-pick facts and pricing. Not Kenvue-specific |
+| Arvato / Gurobi webinar slides (images in `order_picking/webinar notes/`) | Allocation and batching ideas, triaged in `order_picking/webinar notes/not_adopted.md` |
+
+**Facts stated by the sources:**
+
+- F1. Picking runs in Engage. The outbound leader opens Engage to check data from SAP and defines the loading dock in the checking list and in Engage.
+- F2. Data Outbound enters picker names into Engage separated into Bulk Picking and Pick-face.
+- F3. Bulk picking uses an RT. Case picking uses a PPT. Pickers move goods to the outbound staging area.
+- F4. Before picking, Data Outbound compares system quantity with the DDL and the truck plan, reserves products, runs the DDL, receives a group number and DDL number, prints the product checking list, and the CL admin emails the order confirmation.
+- F5. After picking: the checker inspects material, batch, and quantity; pallets are wrapped, moved by RT to the pallet changer machine, staged, and loaded by PPT or by the supplier; Data Outbound checks the TO and prints the invoice.
+- F6. In the LoadMax version, stock is picked to the staging area first. LoadMax then calculates the number of trucks per route and suggests which orders go on each truck, using master data. The supplier loads following LoadMax.
+- F7. Email option 1: LoadMax first (consolidated order, LoadMax assigns truck and picking priority, replaces Voice Pick). Option 2: LoadMax last (transport team consolidates orders, runs LoadMax by route design, LoadMax says which SKU is at the bottom). Voice costs about 157 USD per user per month, with 10 users in TH and 8 in MY. Replacing it would save at least 2 warehouse staff per location.
+- F8. Lucas guide: voice alone gives 5 to 10% productivity; with optimization 20 to 90%. Full-pallet-only sites see little voice benefit. Voice systems capture task data for labor management and provide exceptions (out of stock, damage), skip, and help.
+
+**Inferences (not stated, confirm with the business):**
+
+- I1. Bulk and pick-face run in the same wave.
+- I2. RT means reach truck and PPT means powered pallet truck.
+- I3. One SKU can exist in a bulk location and a pick-face location.
+- I4. The RT drivers who pick may also move wrapped pallets.
+- I5. Slide 3 implies LoadMax may run before any truck exists. Slide 1 says "Plan truck" happens before picking. The two readings conflict.
+
+No weight capacity, pallet capacity, staging capacity, pick share, or step time is given in any source. All such numbers in this document are illustrative and must be replaced from data.
+
+## 4. Current state (verified at commit `c2f0fd1`)
+
+**Picker (`order_picking/source/`):**
+
+- `order_picking_optimizer.py`
+  - `_eligible(order_row, picker_row)` (line 555): checks `required_equipment`, `total_weight`, and `total_volume`. A blank cell means no constraint, through `_is_missing`.
+  - `_picker_blockers(order_row, picker_rows)` (line 995): returns `equipment` or `capacity` per picker that cannot take the job.
+  - `solve_order_assignment(...)` (line 1258): reads order and picker rows with `itertuples`, so extra columns are visible through `getattr`. Builds `picker_shift` from `shift_duration`, `shift_starts` from `shift_start`, and `eligible_pairs` from `_eligible`.
+  - `solve_order_picking(...)` (line 1577): phase 1 routing, then `solve_order_assignment`.
+  - `assignments_frame(result)`: rows `picker_id, order_id, duration`.
+- `assignment_reports.py`: `drop_detail` (415), `utilisation_rows` (443), `write_assignment_reports` (508), `schedule_lateness` (249), `edd_sequence` (222), `staging_peaks` (362), `require_shared_crew` (145), `deadline_minutes` (164).
+- `run_docks.py`: `solve_docks(...)` solves each `by_depot/<depot>` folder with the full picker file, then calls `require_shared_crew`.
+
+**Chunker (`order_picking/chunker/`):**
+
+- `chunk_loads.py`: `ChunkSettings` (83), `_Line` (125), `_REQUIRED_LOAD_COLUMNS` (78), `ORDER_COLUMNS`, `ITEM_COLUMNS`, `JOB_COLUMNS` (lines 35 to 76), `chunk_loads` (177), `_read_lines` (314), `_within_caps` (377), `_job_record` (558), `_derived_base` (600), `_frames` (621), `write_chunk_outputs` (217), `main` (241).
+- `chunk_model.py`: `PickerSpec` (66), `ChunkModelSettings` (86), `read_pickers` (186), `failure_reason` (218), `required_equipment` (242), `chunk_loads_model` (385), `_picker_fits` (569), `_parse_settings` (587), `_reject_infeasible` (634), `_cover_depot` (696), `_order_atoms` (750), `_bundle_ok` (960), `_keep_order_whole` (977), `_savings_jobs` (990), `_candidate_cost` (1053), `_selected_job` (1125).
+
+**Inputs as they exist today:**
+
+- Picker file: `picker_id, equipment_type, max_weight, max_volume, shift_duration` (optional `shift_start`).
+- Crew file `inputs/crew.csv`: `equipment_type, count, max_weight, max_volume, shift_duration`.
+- Load table: `truck_id, depot_id, destination_id, departure_time, source_order_id, item_id, sku_id, location_id, quantity, weight, volume, pick_time, must_ship, account_tier` (required: `truck_id, depot_id, item_id, location_id, weight`).
+- `wh_inventory.csv`: `sku_id, location_id, qty_on_hand`. `wh_skus.csv`: `sku_id, abc_class, unit_weight_kg, unit_volume_m3, demand_rate`. `locations.csv`: `location_id, aisle_id, y, abc_class`. None is read by the solver.
+
+**Facts that matter for the design:**
+
+- A job is one closed walk. Pick time per line is flat (0.5 min). `--job-overhead` is 5 min and `--staging-buffer` is 30 min.
+- `_order_atoms` keeps a source order whole when it fits one job. `_bundle_ok` enforces the line cap, the 16-location tour limit, and `failure_reason` (one picker must fit weight and volume together).
+- `staging_peaks` counts a job as one pallet and compares nothing with a capacity.
+- `gen_warehouse_dataset.py` has a `BULK` SKU class. It only creates heavy orders. It is not a pick mode.
+- Tests live in `order_picking/tests/`. `pytest.ini` sets `pythonpath = source visualizer chunker`, so tests import modules by bare name.
+
+## 5. Gaps and the step that closes each
+
+| Gap | Why it matters | Step |
+|---|---|---|
+| G1. No bulk / pick-face distinction | Wrong crew gets the work; capacities and times are wrong (F2, F3) | A1, A2 |
+| G2. One set of caps and times for every job | A pallet move and a case-pick tour are different work | A2 |
+| G3. Jobs require a truck | The planner may run when no truck exists yet (I5) | A3 |
+| G4. One location per line, no batch, no stock check | Real stock sits in several places and batches (I3, F5) | A4 |
+| G5. Staging has no capacity | A plan can meet deadlines and still overfill the floor (F3, F5) | A5 |
+| G6. Flat 30 min buffer, no checker or wrap steps | Downstream steps can miss departure (F5) | A6 |
+| G7. Crew counted per dock, no other duties | Capacity is overstated (I4) | A7 |
+| G8. Output is CSV and HTML only | A leader must enter pickers into Engage by hand (F2) | A8 |
+| G9. No import from DDL / SAP | Input is synthetic (F4) | B1 |
+| G10. Every time, speed, and layout is a guess | Results cannot be quoted as Thai results | B2, B3, B4 |
+| G11. No link to LoadMax | Needed only for scope C | C1 |
+
+## 6. Design
+
+**Principles:**
+
+1. Extend, do not replace. The weighted and staged assignment, the savings chunker, and the set-partitioning chunker stay.
+2. A blank column means "any". Existing CSVs keep working and produce identical output.
+3. Rules and reports before models. Allocation, staging, and downstream checks start as deterministic rules and reports. A MIP is added only if a measurement on real data shows the rule is poor. This follows the closed-try practice in `TRIED.md`.
+4. New numbers come from CSV files, never from code constants.
+5. Output columns that only exist for new features are written only when the feature is used, so baseline files do not change.
+6. LoadMax is not coupled to the picker in this document.
+
+**Target flow (scope B):**
+
+```mermaid
+flowchart LR
+    DDL["DDL / SAP export (B1)"] --> ALLOC["Allocation rule (A4)"]
+    STOCK["Stock by location and batch"] --> ALLOC
+    ALLOC --> CHUNK["Chunker with pick modes (A1, A2, A3)"]
+    PROFILE["Mode profile (A2)"] --> CHUNK
+    CHUNK --> ASSIGN["Assignment (existing staged solve)"]
+    CREW["Crew policy (A7)"] --> ASSIGN
+    ASSIGN --> STAGING["Staging check (A5)"]
+    ASSIGN --> DOWN["Downstream check (A6)"]
+    ASSIGN --> SHEET["Picker task sheet (A8)"]
+    SHEET --> ENGAGE["Leader enters or imports into Engage"]
+```
+
+**Pick mode values:**
+
+`pick_mode` is a free lowercase string. The Maersk values are `bulk` and `pickface`. A blank means any mode. A job never holds two different non-blank modes. A blank-mode line may join a job of either mode.
+
+**New and changed inputs:**
+
+| File | Change | Required |
+|---|---|---|
+| Picker file / `crew.csv` | Optional `allowed_modes` (semicolon list), `home_depot`, `non_pick_minutes` | No |
+| Load table | Optional `pick_mode`, `group_id`, `batch_id`, `pallet_id` | No |
+| `mode_profile.csv` (new) | Per-mode caps and times | No |
+| `lead_times.csv` (new) | Downstream step times and resources | No |
+| `stock.csv`, `sku_master.csv` (new) | Allocation inputs | Only for A4 |
+| `staging.csv` (new) | Pallet capacity per dock | No |
+
+## 7. Work plan
+
+Phase A needs no real data. It is built with illustrative values and test fixtures. Phase B needs real data and cannot start without it. Phase C is deferred.
+
+```mermaid
+flowchart TD
+    A0["A0 baseline"] --> A1["A1 pick mode"]
+    A1 --> A2["A2 mode profile"]
+    A2 --> A3["A3 wave input"]
+    A2 --> A4["A4 allocation rule"]
+    A2 --> A5["A5 staging report"]
+    A5 --> A6["A6 downstream check"]
+    A1 --> A7["A7 crew policy"]
+    A3 --> A8["A8 task sheet"]
+    A7 --> A8
+    A4 --> B1["B1 DDL import (needs sample)"]
+    A8 --> B2["B2 calibrate (needs task log)"]
+    B2 --> B3["B3 site data (needs layout)"]
+    B3 --> B4["B4 re-measure closed trials"]
+    B4 --> C1["C1 LoadMax contract (deferred)"]
+```
+
+### A0. Baseline regression test
+
+**Gate:** none.
+
+**Goal:** prove later steps do not change existing results.
+
+**Files to read first:** `order_picking/tests/test_chunk_loads.py`, `test_chunk_model.py`, `test_order_picking_optimizer.py`, `order_picking/README.md`.
+
+**Actions:**
+
+1. Run `python -m pytest order_picking` and record the result. Do not fix unrelated failures. Report them.
+2. Create `order_picking/tests/test_baseline_unchanged.py`. It builds small inputs in a temp folder from existing fixtures and checks:
+   - the six-order solve (`inputs/layout_example`) releases all six orders with score 100006 under `--share-shift` (the README value);
+   - the savings chunker on a tiny load table gives fixed `orders.csv`, `order_items.csv`, and `jobs.csv` contents;
+   - the set-partitioning chunker on that same table gives fixed job line sets.
+3. Store the expected CSV text as small checked-in files under `order_picking/tests/baseline/`. Compare exact column lists and values.
+4. Keep the test fast. No 16-truck run, no 600 s solve.
+
+**Do not:** change any source file.
+
+**Acceptance:** the new test passes on untouched code. Every later step must keep it green.
+
+### A1. Pick mode and mode-aware eligibility
+
+**Gate:** none. Mode names are free strings.
+
+**Goal:** a job has a pick mode. A picker has allowed modes. A job goes only to a picker that allows its mode.
+
+**Files to read first:** `order_picking_optimizer.py` (`_eligible`, `_picker_blockers`, `_is_missing`, `_field`), `assignment_reports.py` (`drop_detail`), `chunk_loads.py` (`_Line`, `_read_lines`, `_within_caps`, `_pack_in_order`, `_savings_routes`, `_job_record`, `_frames`), `chunk_model.py` (`PickerSpec`, `read_pickers`, `_picker_fits`, `failure_reason`, `required_equipment`, `_order_atoms`, `_bundle_ok`, `_reject_infeasible`, `_selected_job`).
+
+**Changes (picker side):**
+
+1. In `order_picking_optimizer.py` add `_mode_set(value) -> Optional[frozenset]`. It returns `None` for a missing or blank value. Otherwise it splits on `;`, strips, lowercases, and drops empty parts.
+2. Add `_mode_allows(order_row, picker_row) -> bool`. It reads `pick_mode` from the job and `allowed_modes` from the picker with `getattr`. It returns `True` when either is `None`.
+3. `_eligible` returns `False` when `_mode_allows` is `False`. Keep the current checks unchanged.
+4. `_picker_blockers` returns `pick_mode` for a picker blocked only by mode. Keep `equipment` and `capacity` as they are.
+5. `drop_detail`: `kinds == {"pick_mode"}` returns `pick_mode`. Any other set that contains `pick_mode` returns `pick_mode_and_other`. Existing branches do not change.
+6. Do not change any function signature in `solve_order_assignment`. The new columns arrive through the DataFrames.
+
+**Changes (chunker side):**
+
+1. `ORDER_COLUMNS` and `ITEM_COLUMNS` do not change. `_frames` appends a `pick_mode` column to `orders.csv`, `order_items.csv`, and `jobs.csv` only when at least one line has a non-blank mode.
+2. `_Line` gets `pick_mode: str = ""` as its last field. `_read_lines` reads and normalizes it (strip, lowercase, blank if missing).
+3. Add `_modes_compatible(lines) -> bool` in `chunk_loads.py`. It is `False` when two different non-blank modes appear. Call it first in `_within_caps`. Because `_pack_in_order` and the savings merge use `_within_caps`, no merge can mix modes.
+4. `_job_record` stores `pick_mode`: the one non-blank mode, or blank.
+5. In `chunk_model.py`, `PickerSpec` gets `allowed_modes: Optional[frozenset] = None`. `read_pickers` reads the optional `allowed_modes` column with the same parsing as step 1 of the picker side.
+6. `_picker_fits`, `failure_reason`, and `required_equipment` get an optional `mode: str = ""` argument. A picker whose `allowed_modes` is set and does not contain a non-blank `mode` does not fit. Update every call site (use find-usages): `_reject_infeasible` (two calls), `_jack_tier_blocks` and `_line_above_jack` (pass the line or job mode), `_bundle_ok`, and `_selected_job`.
+7. `_bundle_ok` returns `False` for a bundle with incompatible modes.
+8. `_order_atoms`: group lines by `(source order, mode)` instead of source order. A source order with lines of two modes becomes two atoms. Record this rule in the README: a mixed-mode order is split by mode because bulk and pick-face are different tasks.
+9. `failure_reason` adds the reason `no_picker_for_mode` when the line or order fits a picker on weight and volume but no picker allows its mode. Such rows go to `rejected.csv`.
+10. `_selected_job` sets `required_equipment` only from pickers that allow the job's mode.
+
+**Tests (add to the existing files):**
+
+- Optimizer: a `bulk` job is not eligible for a `pickface`-only picker; a blank-mode job is eligible for all; a blank `allowed_modes` allows everything; `drop_detail` returns `pick_mode`.
+- Chunker (both): two lines of different modes never share a job; a mixed-mode source order becomes two jobs in the cover model; with no mode columns the outputs equal the A0 baseline; `no_picker_for_mode` appears in `rejected.csv`.
+
+**Acceptance:** A0 test passes; new tests pass; `order_picking/README.md` and `chunker/README.md` list the new columns.
+
+**Do not:** rename `pallet_jack` or `forklift`; make `pick_mode` mandatory; use RT or PPT as code constants.
+
+### A2. Mode profile (per-mode caps and times)
+
+**Gate:** A1 done. Values are illustrative until B2.
+
+**Goal:** bulk and pick-face jobs use their own caps, line limits, pick times, and overhead.
+
+**Files to read first:** `chunk_loads.py` (`ChunkSettings`, `_within_caps`, `_pack_in_order`, `_savings_routes`, `_job_record`, `_frames`, `main`), `chunk_model.py` (`ChunkModelSettings`, `_parse_settings`, `_cw_settings`, `_bundle_ok`, `_candidate_cost`, `main`).
+
+**Changes:**
+
+1. New file `order_picking/chunker/mode_profile.py` with a frozen dataclass `ModeCaps` and `read_mode_profile(path: Path) -> Dict[str, ModeCaps]`.
+2. `mode_profile.csv` columns: `pick_mode, max_job_lines, max_job_weight, max_job_volume, default_pick_time, job_overhead, pallet_basis`. A blank cell means use the global value. `pallet_basis` is `job` (a job is one pallet, the default) or `line` (each line is one pallet).
+3. Validate: unique `pick_mode`, numbers finite and non-negative, `max_job_lines` at least 1, `pallet_basis` in `{job, line}`. Errors name the file, row, and column.
+4. Add `mode_caps: Mapping[str, ModeCaps]` (default empty, `field(default_factory=dict)`) to `ChunkSettings` and `ChunkModelSettings`. Add `--mode-profile PATH` to both `main` functions.
+5. Add a helper on the settings, `caps_for(mode) -> tuple` returning the effective `max_job_lines`, `max_job_weight`, `max_job_volume`, `default_pick_time`, and `job_overhead`. A mode not in the profile, or a blank mode, uses the global values.
+6. Replace every read of `settings.max_job_weight`, `max_job_volume`, `max_job_lines`, `default_pick_time`, and `job_overhead` with the mode-aware value. Find them with `grep` on `settings.max_job` and `settings.default_pick_time` and `settings.job_overhead`. In the cover model, `_cw_settings` and `_parse_settings` must carry `mode_caps` through. `_candidate_cost` uses the bundle's mode.
+7. `_frames` writes the mode's `default_pick_time` for a line with no `pick_time`.
+8. When a profile is given, `jobs.csv` gets a `pallets` column: 1 for `pallet_basis = job`, the line count for `line`. Without a profile there is no `pallets` column.
+9. The per-mode weight and volume caps are limits on top of the picker limits. A job must satisfy both.
+
+**Example file (illustrative only; the README must say so):**
+
+```text
+pick_mode,max_job_lines,max_job_weight,max_job_volume,default_pick_time,job_overhead,pallet_basis
+bulk,1,,,0.5,2,line
+pickface,15,,,0.5,5,job
+```
+
+**Tests:** with no profile, output equals A0; with `bulk` `max_job_lines=1` every bulk job has one line; per-mode `default_pick_time` appears in `order_items.csv`; per-mode overhead changes `_candidate_cost`; `pallets` appears only with a profile.
+
+**Acceptance:** as A1, plus a README table for `mode_profile.csv`.
+
+**Do not:** ship guessed values as defaults; change the heaviest-picker rule or the `--jack-tier-merges` default.
+
+### A3. Wave input without a truck
+
+**Gate:** none. It is additive. The business answer (I5) decides whether it is used.
+
+**Goal:** the chunkers accept a load table grouped by a group or DDL number, with a wave cutoff instead of a truck departure.
+
+**Files to read first:** `chunk_loads.py` (`_REQUIRED_LOAD_COLUMNS`, `_read_lines`, `_job_record`, `_derived_base`, `main`), `chunk_model.py` (`_order_keys`, `_parse_settings`, `main`).
+
+**Changes:**
+
+1. `_read_lines` accepts `group_id` when `truck_id` is absent or blank on a row. The grouping key is stored in `_Line.truck_id`, so every downstream output keeps the `truck_id` column name. If both columns exist, `truck_id` wins. Update the missing-column check to require `truck_id` or `group_id`.
+2. `ChunkSettings` and `ChunkModelSettings` get `wave_cutoff: Optional[float] = None` (minutes since wave start). Add `--wave-cutoff MINUTES` to both `main` functions. Reject negative or non-finite values.
+3. `_job_record`: when `departure_minutes` is `None` and `wave_cutoff` is set, `cutoff = wave_cutoff`. The staging buffer is not subtracted from a wave cutoff.
+4. `_derived_base`: in that case, use `hours_left = wave_cutoff / 60.0` for the urgency.
+5. Read `_order_keys` in `chunk_model.py` before editing. It must not depend on `truck_id` being a column of the raw table.
+6. README: "each source order stays on one truck" becomes "stays in one group".
+
+**Tests:** a table with `group_id` and no `departure_time` runs through both chunkers; with `--wave-cutoff 120` every job has cutoff 120; a table with neither `truck_id` nor `group_id` raises a clear error; existing truck tables are unchanged.
+
+**Acceptance:** as A1.
+
+### A4. Stock locations and the allocation rule
+
+**Gate:** none for the rule. Real stock data is needed only to calibrate it (B3).
+
+**Goal:** turn demand lines (SKU, quantity) into pick lines with real stock locations, bulk first and pick-face for the remainder. It is a pre-step. The solver does not read stock files.
+
+**Files to read first:** `order_picking/inputs/layout_warehouse/wh_inventory.csv`, `wh_skus.csv`, `locations.csv`, `order_picking/webinar notes/not_adopted.md`, `chunker/build_truck_loads.py` (for the output shape).
+
+**New file:** `order_picking/chunker/allocate_lines.py` (argparse CLI, `pathlib`).
+
+**Inputs:**
+
+- `demand.csv`: `truck_id` or `group_id`, `depot_id`, `destination_id` (optional), `sku_id`, `quantity`, `must_ship` (optional), `account_tier` (optional), `departure_time` (optional).
+- `stock.csv`: `sku_id, location_id, batch_id, pallet_id, qty, expiry, location_type`. `location_type` is `bulk` or `pickface`. `expiry` is optional.
+- `sku_master.csv`: `sku_id, unit_weight_kg, unit_volume_m3, case_qty, pallet_qty`. A blank `case_qty` means 1. A blank `pallet_qty` means there is no pallet tier.
+- `--travel` (the travel-time CSV) and `--depot`, for the nearest-location tie-break. Use `_build_lookup` from `order_picking_optimizer.py`.
+
+**Rule (deterministic):**
+
+Process demand lines in order of `departure_time` (blank last), `must_ship` first, then input order. Stock is consumed as lines are processed. For each line, `remaining = quantity`:
+
+1. Pallet tier: while `pallet_qty` is set and `remaining >= pallet_qty`, take a whole pallet row from `bulk` stock whose `qty >= pallet_qty`. Emit a line with mode `bulk`, quantity equal to the pallet quantity.
+2. Case tier: `cases = floor(remaining / case_qty)`. Take whole cases from `pickface` rows first, then from `bulk` rows. Emit lines with the mode of the row's `location_type`.
+3. Residual tier: the remaining units below one case. Use an already-opened case (tracked per `(location_id, batch_id)`) if it holds enough. Otherwise open a case from the `pickface` row with the smallest `qty` that covers it. Emit a `pickface` line.
+4. Within each tier, order candidate rows by earliest `expiry` (blank last), then shortest `depot -> location` travel time, then `location_id`.
+5. Reduce the row's available `qty` by what is taken. Never take more than a row holds.
+6. If stock is short, write the shortfall to `short_stock.csv` (`sku_id, requested, allocated, short`) and exit non-zero unless `--allow-short` is given.
+
+**Output:** a load-table-shaped CSV: `truck_id, depot_id, destination_id, departure_time, source_order_id, item_id, sku_id, location_id, quantity, weight, volume, pick_time, must_ship, account_tier, pick_mode, batch_id, pallet_id`. `weight = quantity * unit_weight_kg` and `volume = quantity * unit_volume_m3`. A missing SKU in `sku_master.csv` is written to `allocation_rejected.csv`, and the run exits non-zero. Do not guess a weight.
+
+**Report (printed and written to `allocation_summary.csv`):** full-pallet rate, full-case rate, opened-case count, and total depot-to-location walking minutes. Add the numbers to `TRIED.md` only after the user confirms. If the numbers show the rule is poor on real data, reopen the Allocation row in `not_adopted.md` (its condition, one SKU in more than one pallet or case, is then met).
+
+**Tests (new `order_picking/tests/test_allocate_lines.py`):** single-location SKU gives the same line as today; whole pallet first; then cases; residual opens the smallest covering case; earliest expiry wins; stock is not oversold across two demand lines; short stock exits non-zero; missing SKU master rejects.
+
+**Acceptance:** the output runs through `chunk_loads.py` and `chunk_model.py` unchanged.
+
+**Do not:** read `wh_inventory.csv` inside the solver; build a MIP; change `not_adopted.md` without the measurement.
+
+### A5. Staging capacity report
+
+**Gate:** none for the report. The real capacity is needed only to give a meaningful answer (B3).
+
+**Goal:** report, and optionally fail on, pallets waiting at a dock beyond a capacity.
+
+**Files to read first:** `assignment_reports.py` (`staging_peaks`, `schedule_lateness`, `write_assignment_reports`), `run_docks.py`, `run_wave_trials.py` (where `staging_peaks` is used), `tests/test_assignment_reports.py`.
+
+**Changes:**
+
+1. `staging_peaks(schedule, staging_buffer=30.0, pallets_by_job=None, capacity=None)`. Keep all existing return keys. When `pallets_by_job` is given, add `peak_pallets` and weight each event by the job's pallets (default 1). When `capacity` is given, add `capacity`, `over_capacity` (bool), and `first_over_minute`.
+2. `run_docks.py`: add `--staging-capacity` (a number) and `--staging-file` (CSV `depot_id, capacity_pallets`). For each dock, read `by_depot/<depot>/jobs.csv`. Use its `pallets` column when present, else 1. Call `staging_peaks`, and write `staging.csv` into the dock report folder. Print one line per dock.
+3. `--fail-on-staging-overflow` makes `run_docks.py` raise after all docks are written, with the dock names. Without the flag the report is informational.
+4. `solve_docks` gets optional `staging_capacity` and `fail_on_overflow` arguments, defaulting to off, so existing calls are unchanged.
+
+**Tests:** a hand-made schedule with a known overflow; pallet weights change the peak; no capacity gives the current output exactly; the flag raises.
+
+**Acceptance:** report only. A constraint inside the solver is a separate approved item and needs a measured overflow on real data first.
+
+### A6. Downstream lead times and a queue check
+
+**Gate:** none for the code. The times come from B2 or the business.
+
+**Goal:** replace the flat 30-minute buffer with step times, and test whether a downstream step (checker, wrapping, pallet changer, loading) misses departure.
+
+**Files to read first:** `assignment_reports.py` (`schedule_lateness`, `staging_peaks`), `run_docks.py`, `chunk_loads.py` (`staging_buffer`).
+
+**Changes:**
+
+1. New optional `lead_times.csv`: `step, order, fixed_minutes, minutes_per_pallet, resource_count`. `order` is the sequence (1, 2, ...). A blank `resource_count` means 1.
+2. New file `order_picking/source/downstream_check.py` (argparse CLI and a function). It reads a schedule (job id, finish minute, deadline minute) plus pallets per job, and simulates FIFO queues: each job enters step 1 at its finish minute, waits for a free server, takes `fixed_minutes + minutes_per_pallet * pallets`, then enters step 2, and so on. Departure is `deadline_minute + staging_buffer`.
+3. Output `downstream_report.csv`: `job_id, depot_id, finish_minute, ready_minute, departure_minute, minutes_late_for_departure`, plus the exit minute of each step. Print the first job that misses departure at each step and the maximum wait per step.
+4. Add `--lead-times PATH` to the chunker `main` functions. When given, the effective staging buffer is the sum of `fixed_minutes + minutes_per_pallet` for one pallet across the steps (no queueing), and it overrides `--staging-buffer`. Without it, behavior is unchanged.
+5. Report only. No constraint in the solver.
+
+**Tests:** one server and two jobs finishing together shows queue delay; two servers removes it; no file gives the current output.
+
+**Acceptance:** as A5.
+
+### A7. Crew policy and non-picking duties
+
+**Gate:** none for the code. The policy is chosen by the business (D9).
+
+**Goal:** count one person once, and subtract time spent on other duties.
+
+**Files to read first:** `order_picking_optimizer.py` (`solve_order_assignment`, uses of `shift_duration`), `assignment_reports.py` (`utilisation_rows`, `require_shared_crew`), `run_docks.py`, `run_assignment_scenarios.py`, `build_wave.py` (`load_crew`, `_pickers`). Search for every use of `shift_duration` with `grep` first.
+
+**Changes:**
+
+1. Optional picker column `non_pick_minutes` (default 0). Add `effective_shift(picker) -> float` in `order_picking_optimizer.py` returning `shift_duration - non_pick_minutes`, never below 0. Use it where `picker_shift` is built in `solve_order_assignment` and in `utilisation_rows` for `available_minutes`. Raise if the result is not positive.
+2. Optional picker column `home_depot`. In `solve_docks`, a dock solve uses only pickers whose `home_depot` is blank or equals that dock's folder name. If the column is missing, every picker is used (today's behavior).
+3. When a picker has a `home_depot`, it appears in only one dock's table, so `require_shared_crew` stays correct with no change.
+4. `build_wave.load_crew` accepts the same optional columns in `crew.csv` and passes them to the generated picker file. `home_depot` on a crew row with `count > 1` applies to every generated picker of that row.
+
+**Tests:** a picker with a `home_depot` is absent from the other dock's plan; `non_pick_minutes` lowers `available_minutes` and capacity; blanks give the current output; the shared-crew screen is unchanged for the baseline.
+
+**Acceptance:** the "One crew for both docks" row in `TRIED.md` is restated (after user confirmation) as closed for the home-dock policy and still open for a roaming crew.
+
+**Do not:** build a joint dock model; add a walk-between-docks term without a measurement that the minute-sum screen fails.
+
+### A8. Picker task sheet
+
+**Gate:** none.
+
+**Goal:** give the outbound leader a picker-by-picker task list that can be read, printed, or entered into Engage. This closes the gap that the plan has no output a person can act on.
+
+**Files to read first:** `order_picking_optimizer.py` (`assignments_frame`, `main`), `assignment_reports.py` (`schedule_lateness`, `edd_sequence`, `deadline_minutes`), `chunker/chunk_loads.py` (`orders.csv` and `order_items.csv` shape), `tests/test_assignment_reports.py`.
+
+**New file:** `order_picking/source/task_sheet.py` (argparse CLI and a function).
+
+**Inputs:** `--assignments` (`picker_id, order_id, duration`), `--orders`, `--items`, `--pickers`. Optional `--load-stops` is not needed.
+
+**Behavior:**
+
+1. Rebuild each picker's sequence with `schedule_lateness(picker_assignments, durations, deadlines)`. Durations come from `assignments.csv`. Deadlines come from `orders.csv` `cutoff_time` through `deadline_minutes`. No solver call.
+2. For each picker, write one row per stop: `picker_id, equipment_type, sequence, job_id, truck_id, depot_id, pick_mode, location_id, item_id, quantity, weight, planned_start_minute, planned_finish_minute, deadline_minute, minutes_late`. Stops follow the line order of `order_items.csv` (the chunker's tour order). The sheet header states that.
+3. `--out` writes `task_sheet.csv`. `--html` also writes a printable page grouped by picker, using only the standard library and the style of `visualizer/` (no new dependency).
+4. `pick_mode`, `truck_id`, and `depot_id` are blank when the input has no such column.
+
+**Tests:** a two-picker fixture gives the expected sequence by deadline; a late job shows `minutes_late`; the sheet has one row per item line; missing optional columns give blanks.
+
+**Acceptance:** run on the `layout_example` six-order output and attach the CSV.
+
+**Do not:** claim Engage can import this file. That is question D10 (section 10). Until it is answered, the sheet is for the leader to read or key in.
+
+### B1. DDL / SAP import adapter (needs real data)
+
+**Gate:** a real DDL export sample and its field list (D5).
+
+**Goal:** convert the DDL export into the demand and load tables the chunker and `allocate_lines.py` read.
+
+**New file:** `order_picking/chunker/import_ddl.py` (argparse CLI).
+
+**Changes:**
+
+1. Read the sample first. Write the mapping as a CSV `column_map.csv` with `source_column,target_column`. The adapter applies it. Do not hard-code Thai or SAP column names beyond defaults that the sample confirms.
+2. Output `group_id` (DDL or group number), `depot_id` (dock from the checking list), `sku_id`, `batch_id`, `quantity`, `uom`, `destination_id`, `must_ship`, `departure_time` when present.
+3. A bad quantity, a duplicate line, or a missing SKU is written to `import_rejected.csv`, and the run exits non-zero.
+4. No SQL, no `future_addons/`.
+
+**Tests:** a small fixture covers the mapping, a missing SKU, a bad quantity, and a duplicate.
+
+**Acceptance:** adapter output feeds `allocate_lines.py` and `chunk_loads.py` unchanged. Do not commit confidential data.
+
+### B2. Calibrate from the Engage task log (needs real data)
+
+**Gate:** a real task-log sample, and the vendor name (D10).
+
+**Goal:** replace guessed times and speeds with measured ones.
+
+**New file:** `order_picking/source/calibrate_from_task_log.py` (argparse CLI).
+
+**Changes:**
+
+1. Read the sample first. Map columns through a CSV map, as in B1.
+2. Per pick mode compute pick time (median and 90th percentile), per-job overhead, and walking speed (recorded travel time against the matrix distance).
+3. Write `mode_profile.csv` and `calibration_report.md` stating the sample size, the dates, and the gaps. If a mode has too few rows, say so and leave the value blank.
+4. The report is reviewed by the user before any value becomes a default.
+
+**Tests:** a synthetic log with known values recovers them.
+
+### B3. Site data (needs real data)
+
+**Gate:** real layout, locations, docks, and equipment list (D11, D3, D7).
+
+**Goal:** a site folder, for example `order_picking/inputs/site_th/`, that the existing tools consume. Confirm the folder name and whether site data may be stored in the repository.
+
+**Changes:**
+
+1. Provide `aisles.csv`, `cross_aisles.csv`, `locations.csv`, `depots.csv`, `crew.csv`, `staging.csv`, `lead_times.csv`, and `mode_profile.csv` in the formats above.
+2. Add optional `location_type` (`bulk` or `pickface`) to `locations.csv`. First check that `build_travel_matrix.py` ignores unknown columns (`load_layout`). If it does not, make it ignore them without changing any existing output.
+3. Build the travel matrix and validate that every `location_id` in the lines exists in it.
+
+**Acceptance:** the chunker, picker, `run_docks.py`, and `task_sheet.py` run on the site folder.
+
+### B4. Re-measure the closed trials (needs B2 and B3)
+
+**Goal:** find which results in `TRIED.md` change on real data.
+
+**Actions:**
+
+1. List the rows that depend on synthetic inputs: the Phase 1 gap to Held-Karp, `--jack-tier-merges`, loading order, dock staging peaks, tour inflation, and the five PACK_B drops.
+2. Rerun each once on the real data with the commands recorded in `TRIED.md`.
+3. Add new dated rows. Do not edit old rows; mark them "synthetic data" where relevant.
+4. Ask the user before changing any default.
+
+### C1. LoadMax interface (deferred)
+
+**Gate:** scope C is chosen, or scope B with a request for a link; and the answer to I5 is known.
+
+**Deliverable (document only):** a short spec in `order_picking/chunker/README.md` naming the file the picker would read from LoadMax. Candidate: `loadmax_sequence.csv` with `truck_id, container, layer, position, sku_id, quantity`, mapped to the existing `load_stops` depth so pick trips follow loading order. `TRIED.md` records "No LoadMax wrapper", because `priority_weight` and `container_priority` score different decisions. Do not build it without approval.
+
+## 8. Assumption register
+
+Update the row when the step that resolves it is done. Status: `guess`, `measured`, `confirmed`.
+
+| ID | Assumption in the code today | Where | Status | Closed by |
+|---|---|---|---|---|
+| A1 | Walking speed 65 m/min | `build_travel_matrix.py` | guess | B2 |
+| A2 | Pick time 0.5 min per line | `--default-pick-time`, `truck_loads.csv` | guess | B2 |
+| A3 | Job overhead 5 min | `--job-overhead` | guess | B2 |
+| A4 | Staging buffer 30 min | `--staging-buffer` | guess | A6, B3 |
+| A5 | Shift 480 min; 8 jacks and 4 forklifts | `inputs/crew.csv` | guess | A7, B3 |
+| A6 | Jack 2500 kg / 2.0 m3; forklift 5000 kg / 4.0 m3 | `inputs/crew.csv` | guess | B3 |
+| A7 | One job is one pallet | `staging_peaks` | guess | A2, A5 |
+| A8 | One stock location per line | `_Line.location_id` | guess | A4, B3 |
+| A9 | At most 15 lines per job | `--max-job-lines` | guess | A2 |
+| A10 | A fitting source order stays whole; mixed-mode orders split by mode | `chunk_model.py` | business rule, unconfirmed | A1 |
+| A11 | Two docks, `PACK_A` and `PACK_B`, 72 m apart | `layout_warehouse/depots.csv` | guess | B3 |
+| A12 | Every picker is available at every dock | `run_docks.py` | open decision | A7 |
+| A13 | A bulk line is one pallet; a pick-face job builds one pallet | `mode_profile.csv` (A2) | guess | B2 |
+
+2026-10-28: `calibrate_from_task_log.py` can fill a profile from a mapped task log. No log has been reviewed, so A1, A2, A3, and A13 stay `guess`. `inputs/site_template/` is the file shape, not the Thai site, so A4, A5, A6, and A11 stay `guess`. The design status line is unchanged.
+
+## 9. Definition of done for every step
+
+- `python -m pytest order_picking` passes, including `test_baseline_unchanged.py`.
+- `python -m py_compile` passes on every modified `.py` file.
+- New columns, files, and flags are optional, documented in `order_picking/README.md` or `order_picking/chunker/README.md`, and absent by default.
+- No hard-coded business number. New numbers come from CSV.
+- Error messages name the file, the row, and the column.
+- No silent fallback. A missing SKU, a missing location, and short stock raise or are written to a rejected file.
+- The assumption register is updated.
+- `DECISIONS.md` and `TRIED.md` are updated only after the user confirms.
+
+## 10. Questions that gate the real values
+
+These do not block Phase A. They decide the numbers and Phase B.
+
+| ID | Question | Used by |
+|---|---|---|
+| D1 | Scope: A) LoadMax only, B) keep Engage and add planning, C) replace voice. This document assumes B. | All |
+| D2 | Does LoadMax run on an order list with no truck yet? | A3 use, C1 |
+| D3 | What do RT and PPT stand for, and what weight, pallet count, and lift height does each have? | A1, A2, B3 |
+| D4 | What share of lines is bulk and what share is pick-face, over a recent week? | B2 |
+| D5 | Can you share a DDL export and the checking list layout? | B1 |
+| D6 | Does one SKU sit in both a bulk and a pick-face location? Stock by location, batch, quantity, expiry. | A4, B3 |
+| D7 | How many pallets can each dock's staging area hold, and do the docks share space? | A5, B3 |
+| D8 | How long do the checker, wrapping, pallet changer move, and loading take per pallet, and how many people or machines does each use? | A6 |
+| D9 | Is the crew per dock or roaming? Do the RT drivers who pick also move wrapped pallets? | A7 |
+| D10 | Can you share an Engage task-log sample? Who is the vendor? Does Engage accept an external task list, and in what format? | A8, B2 |
+| D11 | Can you share the layout: aisles, locations, docks, measured walking speed? | B3 |
+
+## 11. Non-goals
+
+- Replacing the Engage voice dialog, verification, exceptions, or labor reporting.
+- Modelling the checker, wrapping, invoice, TO check, or backhaul steps beyond the A6 report.
+- Aisle congestion, Numba, parallel truck pricing, and a mid-shift re-plan (closed in `TRIED.md` until needed).
+- Changing the truck-loading model in `loadmax/`, including the class caps added in commit `c2f0fd1`.
+- Quoting any current result (171 jobs, 2,975.885 min, 59 of 300) as a Thai result.
+
+## 12. Risks
+
+| Risk | Effect | Mitigation |
+|---|---|---|
+| D1 resolves to A | Picker work is not needed | Stop after A0 |
+| Inferences I1 to I5 are wrong | A1 to A3 are built on the wrong picture | Ask D2 and D3 first; every change is optional |
+| Real data arrives late | Steps stay in guess mode | Phase A needs no real data |
+| Mode split slows the cover model | The 475 s run grows | Test on one truck first; stop and report if the time more than doubles |
+| Mixed-mode order splitting changes job counts | Results differ from the whole-order baseline | A10 is flagged; the A0 baseline stays valid because modes are absent |
+| Engage cannot take a plan | The leader keys it in by hand, as today | A8 produces a readable sheet; D10 asks the vendor |
+| Confidential data in the repository | Policy breach | Confirm storage location in B3 |
+
+## 13. Appendix: source excerpts
+
+**Deck, current process (slide 1):**
+
+- Data Outbound: compare quantity of products in the system with DDL and plan truck document.
+- Outbound leader: open Engage (voice pick system) to check entry data from SAP.
+- Outbound leader: define loading dock in the Checking List and Engage system.
+- Data Outbound: enter picker name by separate Bulk Picking and Pick-face in the Engage system.
+- Picker: pick order and move to outbound staging area. Bulk picking by using RT. Case picking by using PPT.
+- Data Outbound: check plan truck, reserve products, run DDL, run group number to receive group number and DDL number, print product checking list.
+
+**Deck, dispatch (slide 2):**
+
+- Outbound checker: inspect FG by checking material, batch, and quantity.
+- Outbound driver: move wrapped pallets to the pallet changer machine by using RT, then to the outbound staging area.
+- Outbound loading driver: load products to container by using PPT. Supplier inspects FG and loads the container.
+- Backhaul outbound checker: wrapping pallets. Data Outbound: check TO in the system, print invoice, send invoice to supplier.
+
+**Deck, LoadMax version (slide 3):**
+
+- Same dispatch flow, with "WH: stock picking on staging area" first.
+- LoadMax calculates the number of trucks per route and suggests which orders go with each truck, using master data.
+- Supplier loads products to truck following LoadMax.
+
+**Email, key lines:**
+
+- Option 1: LoadMax at the first stage. WH people run consolidated order. LoadMax assigns truck and picking priority and replaces Voice Pick.
+- Option 2: LoadMax last. Transport people run picking using Voice pick as normal. Transport consolidates many orders and runs LoadMax by route design. LoadMax tells which SKU is at the bottom.
+- Voice costs 157 USD per user per month. TH has 10 users and MY has 8. Replacing voice could reduce WH staff by at least 2 persons per location.
+
+**Lucas guide, relevant facts:**
+
+- Voice is hands-free directed work: pick, receive, put away, replenish, count, load.
+- Productivity gain from voice alone is 5 to 10%; with process optimization 20 to 90%.
+- Voice systems capture task data for labor management, and provide exceptions, skip, and help.
+- Full-pallet-only sites see little benefit from voice.
+- Pricing: per-user licence, SaaS, or per transaction.
+
+**Arvato / Gurobi webinar, triage:**
+
+- Hierarchical allocation (full pallet, full case, single item) and module-distance batching were not adopted. Condition to reopen allocation: one SKU occupies more than one pallet or case. Step A4 is where that condition is tested on real data.
+- Staged objectives instead of one weighted sum are already in the repository (`--staged-assignment`).

@@ -6,7 +6,7 @@ The live chunker result stays 171 jobs and 2,975.885 minutes, every truck gap 0,
 
 ## Pending
 
-The release rule is now `--staged-assignment` (default off). Replenishment, a mid-shift re-plan, splitting only the large orders, preferring jacks, and one crew for both docks are still open. The Phase 1 gap, the two-tier cap, loading order, dock staging, and the tour-inflation stress test were measured on 2026-10-22 and are not defaults. Reports are in `outputs/chunk_assign/wave_trials/`.
+The release rule is now `--staged-assignment` (default off). Replenishment, a mid-shift re-plan, splitting only the large orders, and preferring jacks are still open. A named `home_depot` keeps that picker on one dock. A blank home still enters every dock, so a roaming crew is still open. The Phase 1 gap, the two-tier cap, loading order, dock staging, and the tour-inflation stress test were measured on 2026-10-22 on the synthetic 16-truck file and are not defaults. They were not rerun. Reports are in `outputs/chunk_assign/wave_trials/`.
 
 | Pending | What is missing | Note |
 |---|---|---|
@@ -19,7 +19,7 @@ The release rule is now `--staged-assignment` (default off). Replenishment, a mi
 | Mid-shift changes | A new or cancelled order does not trigger a re-plan. | This is the runtime question. Numba and process-level truck pricing stay closed until a re-plan during the shift is actually required. |
 | Splitting large orders | The 604-minute whole-order cost is measured. Splitting only the large orders is not. | Waits on the rule owner. Note: `chunker/order_whole_cost_memo.md`. |
 | Preferring jacks | Measured 2026-10-21. The default stays 0. | On the staged path any positive value minimises the count. The returned plan reaches 0 and then books PJ04 and PJ08 past 480 across the two docks. See the assignment row. |
-| One crew for both docks | Each dock solve still sees the full picker file, so the 12 people are counted twice. The minute sum is a screen. It raised on the prefer-jack plan: PJ04 506.5 and PJ08 504.7 of 480. A total under 480 can still overlap on the clock, and the 1.1 min walk is outside the sum. | Open decision. `run_docks.py` does not assign a home dock. Combined busy time on the prefer-0 staged wave is about 37% of one crew. |
+| One crew for both docks | Each dock solve still sees every picker whose `home_depot` is blank or names that dock. The minute sum is a screen. It raised on the prefer-jack plan: PJ04 506.5 and PJ08 504.7 of 480. A total under 480 can still overlap on the clock, and the 1.1 min walk is outside the sum. | A named home dock is in the code and is closed for that policy. A roaming crew stays open. A blank home, and the shipped crew which has no home column, still enters every dock. Combined busy time on the prefer-0 staged wave is about 37% of one crew. Those figures are synthetic data and were not rerun. |
 
 ## Chunker
 
@@ -66,7 +66,7 @@ The release rule is now `--staged-assignment` (default off). Replenishment, a mi
 | Pass `mip_abs_gap` through `scipy.optimize.milp` | SciPy 1.18 warns and does not treat it as a stopping option | Encode the absolute slack as `mip_rel_gap`. |
 | Read the five PACK_B drops as the staged solve already being on | The weighted path is still the default. Staged mode is `--staged-assignment` | Toy checks: a 5% caller gap still releases one must-ship job plus 20 jobs of weight 2; T8b drops one job on the weighted path and keeps both, with 4 late minutes, on the staged path. |
 | Withhold a job by comparing its duration with the raw cutoff | A picker who starts later has a shorter window before the cutoff | `--withhold-if-late-at-start` uses `A_r(T)`. Default off. Reason `cannot_meet_cutoff`. |
-| Build a joint dock model because one person might exceed 480 | On the saved prefer-0 baseline nobody did. FK02 was 478.8. The prefer-jack plan is the case the minute sum raises: PJ04 506.5 and PJ08 504.7 | `run_docks.py` sums busy minutes against `shift_duration` (tolerance 0.0001) and does not re-solve. A passing total still leaves clock overlap and the 1.1 min walk outside the screen. The crew policy is still open |
+| Build a joint dock model because one person might exceed 480 | On the saved prefer-0 baseline nobody did. FK02 was 478.8. The prefer-jack plan is the case the minute sum raises: PJ04 506.5 and PJ08 504.7 | `run_docks.py` sums busy minutes against the shift left after `non_pick_minutes` (tolerance 0.0001) and does not re-solve. A passing total still leaves clock overlap and the 1.1 min walk outside the screen. A roaming crew stays open. See the 2026-10-28 re-measure. |
 | Change the savings cap to the lightest picker | Weight and volume are judged together on one person | The cap stays the heaviest picker. |
 | Let a savings merge continue when `max_job_volume` is set and a line has no volume | The merge was refused and the run continued | `chunk_loads` raises and names the line. |
 | Replace Phase 1 with the chunker's Held-Karp tour | 2026-10-22, saved 171 jobs, walking minutes only, reusing `chunk_model._held_karp`. Mean excess 0.138 minutes, 95th percentile 0.554 (nearest rank `ceil(0.95 n)`), worst `TRK07-J11` at PACK_A, heuristic 7.262 against Held-Karp 6.400. Mean walks 5.971 and 5.833. 72 tours were longer, 13 by more than 0.5 minutes, and none was shorter. The stored `walk_minutes` matched Held-Karp. 161 of 171 restricted 2-opt searches stopped while a neighbor swap still improved the tour. A staged re-solve that used Held-Karp walk plus pick time released 400424.4 and 700414.0 with 0 late minutes, the same release as the heuristic durations. Who received the work moved; that staged model does not choose the machine | Keep nearest neighbor plus restricted 2-opt. The savings command's `walk_minutes` stays nearest neighbor |
@@ -77,3 +77,18 @@ The release rule is now `--staged-assignment` (default off). Replenishment, a mi
 ## Also left out
 
 Numba, process-level truck parallelism, a line-level exact MIP, PyYAML, and a second drop variable. `order_picking/usethis/` is not in the tree. `loadmax/future_addons/` stays off this path.
+
+## 2026-10-28 re-measure
+
+No site extract and no task log are in the repository. The closed rows below stay on the synthetic 16-truck file. They were not rerun, and their numbers were not edited. A new row here only records that fact.
+
+| Topic | Status |
+|---|---|
+| Phase 1 gap to Held-Karp | Synthetic data, measured 2026-10-22. Not rerun. |
+| `--jack-tier-merges` | Synthetic data, measured 2026-10-22. The flag stays off. Not rerun. |
+| Loading order | Synthetic data, measured 2026-10-22. The default tie-break stays `order_id`. Not rerun. |
+| Dock staging peaks | Synthetic data, measured 2026-10-22. Still a report. Not rerun. |
+| Tour inflation | Synthetic data, measured 2026-10-22. Aisle-segment inflation was not built. Not rerun. |
+| Five PACK_B drops | Synthetic data. The stop rule already replaced that reading. Not rerun. |
+
+No LoadMax wrapper. `priority_weight` and `container_priority` score different decisions. The candidate file a later link would read is named in `chunker/README.md`. That reader is not built.

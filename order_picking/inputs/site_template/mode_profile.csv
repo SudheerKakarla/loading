@@ -1,0 +1,3 @@
+pick_mode,max_job_lines,max_job_weight,max_job_volume,default_pick_time,job_overhead,pallet_basis
+bulk,1,,,0.5,2,line
+pickface,15,,,0.5,5,job

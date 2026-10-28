@@ -1,10 +1,11 @@
 """Solve each depot folder, then screen the shared crew by summed minutes.
 
-Each depot is its own picker solve and sees the full picker file. After
-every depot has a utilisation table, ``require_shared_crew`` sums busy
-minutes and compares them with ``shift_duration``. A pass is that total.
-Clock overlap and the walk between docks stay outside the screen. It does
-not build a joint dock model.
+Each depot is its own picker solve. With no ``home_depot`` column, each solve
+sees the full picker file. After every depot has a utilisation table,
+``require_shared_crew`` sums busy minutes and compares them with the shift
+left after ``non_pick_minutes``. A pass is that total. Clock overlap and the
+walk between docks stay outside the screen. It does not build a joint dock
+model. A blank ``home_depot`` still lets one picker into every dock.
 
 Run from ``order_picking/``::
 
@@ -14,14 +15,16 @@ Run from ``order_picking/``::
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
 from assignment_reports import (
     require_shared_crew,
     shared_crew_screen_message,
+    staging_peaks,
     utilisation_rows,
     write_assignment_reports,
 )
@@ -79,6 +82,77 @@ def _solver_log_rows(result: dict) -> List[dict]:
     ]
 
 
+def pickers_for_depot(pickers: pd.DataFrame, depot_id: str) -> pd.DataFrame:
+    """Pickers whose home is this dock, plus pickers with a blank home.
+
+    A missing ``home_depot`` column leaves the full crew, which is the
+    current dock solve. A named home is absent from every other dock.
+    """
+    if "home_depot" not in pickers.columns:
+        return pickers
+
+    def at_home(value: object) -> bool:
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return True
+        text = str(value).strip()
+        if text == "" or text.lower() == "nan":
+            return True
+        return text == depot_id
+
+    chosen = pickers.loc[pickers["home_depot"].map(at_home)].reset_index(drop=True)
+    if chosen.empty:
+        raise ValueError(
+            f"{depot_id} has no picker with home_depot {depot_id} or a blank home_depot."
+        )
+    return chosen
+
+
+def load_staging_capacities(path: Path) -> Dict[str, float]:
+    """Read ``depot_id,capacity_pallets``. The count is a report, not a constraint."""
+    staging_path = Path(path)
+    if not staging_path.is_file():
+        raise ValueError(f"Staging file not found: {staging_path}")
+    frame = pd.read_csv(staging_path)
+    frame.columns = [str(name).strip() for name in frame.columns]
+    missing = [name for name in ("depot_id", "capacity_pallets") if name not in frame.columns]
+    if missing:
+        raise ValueError(f"{staging_path} is missing column(s): {', '.join(missing)}.")
+    found: Dict[str, float] = {}
+    for index, row in frame.iterrows():
+        label = f"row {int(index) + 2} of {staging_path}"
+        depot = "" if pd.isna(row.depot_id) else str(row.depot_id).strip()
+        if depot == "" or depot.lower() == "nan":
+            raise ValueError(f"staging {label} column depot_id is blank.")
+        if depot in found:
+            raise ValueError(f"staging {label} repeats depot_id {depot}.")
+        try:
+            capacity = float(row.capacity_pallets)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"staging {label} column capacity_pallets must be a number.") from exc
+        if not math.isfinite(capacity) or capacity < 0:
+            raise ValueError(f"staging {label} column capacity_pallets must be a finite number >= 0.")
+        found[depot] = capacity
+    if not found:
+        raise ValueError(f"{staging_path} has no depot rows.")
+    return found
+
+
+def _job_pallet_counts(folder: Path) -> Dict[str, float]:
+    """Pallet counts from ``jobs.csv`` when that column was written. Otherwise none."""
+    path = folder / "jobs.csv"
+    if not path.is_file():
+        return {}
+    jobs = pd.read_csv(path)
+    if "pallets" not in jobs.columns or "job_id" not in jobs.columns:
+        return {}
+    counts: Dict[str, float] = {}
+    for row in jobs.itertuples(index=False):
+        if pd.isna(row.pallets):
+            continue
+        counts[str(row.job_id)] = float(row.pallets)
+    return counts
+
+
 def solve_docks(
     by_depot: Path,
     pickers: pd.DataFrame,
@@ -94,22 +168,34 @@ def solve_docks(
     withhold_if_late_at_start: bool = False,
     balance_weight: float = 0.0,
     time_limit: float = 10.0,
+    staging_capacity: Optional[float] = None,
+    staging_capacities: Optional[Dict[str, float]] = None,
+    fail_on_overflow: bool = False,
 ) -> List[dict]:
     """Solve each depot, write its reports, then screen the summed minutes.
 
-    ``available_minutes`` is each picker's ``shift_duration``. The screen
-    runs only after every requested depot has been written. A pass is that
-    total. Clock overlap and the walk between docks stay outside it.
+    ``available_minutes`` is each picker's shift after ``non_pick_minutes``.
+    The screen runs only after every requested depot has been written. A pass
+    is that total. Clock overlap and the walk between docks stay outside it.
+    A named ``home_depot`` keeps that picker off the other docks. A blank home
+    is still eligible everywhere, so one crew can still be counted twice.
+    Staging capacity is a report. It does not change the solve.
     """
+    if staging_capacity is not None and (
+        not math.isfinite(staging_capacity) or staging_capacity < 0
+    ):
+        raise ValueError("staging capacity must be a finite number >= 0.")
     folders = depot_folders(by_depot, depots)
     tables = []
     results: List[dict] = []
+    overflows: List[str] = []
     for folder in folders:
         depot_id = folder.name
+        depot_pickers = pickers_for_depot(pickers, depot_id)
         result = solve_order_picking(
             pd.read_csv(folder / "orders.csv"),
             pd.read_csv(folder / "order_items.csv"),
-            pickers,
+            depot_pickers,
             distance_matrix,
             depot_id,
             phase1_solver=phase1_solver,
@@ -122,7 +208,7 @@ def solve_docks(
             withhold_if_late_at_start=withhold_if_late_at_start,
             balance_weight=balance_weight,
         )
-        utilisation = utilisation_rows(pickers, result.get("picker_workload") or {})
+        utilisation = utilisation_rows(depot_pickers, result.get("picker_workload") or {})
         report_dir = out_dir / depot_id
         write_assignment_reports(
             report_dir,
@@ -136,9 +222,49 @@ def solve_docks(
         print(f"Wrote {report_dir}")
         tables.append(pd.DataFrame(utilisation))
         results.append(result)
+        capacity = None
+        if staging_capacities is not None and depot_id in staging_capacities:
+            capacity = staging_capacities[depot_id]
+        elif staging_capacity is not None:
+            capacity = staging_capacity
+        counts = _job_pallet_counts(folder)
+        peaks = staging_peaks(
+            result.get("schedule") or [],
+            pallets_by_job=counts,
+            capacity=capacity,
+        )
+        _write_staging(report_dir, depot_id, peaks, capacity)
+        minute = peaks["peak_minute"]
+        minute_text = "none" if minute is None else f"{minute:g}"
+        line = f"Staging {depot_id}: peak {peaks['peak']:g} pallets at minute {minute_text}."
+        if peaks["over_capacity"]:
+            line += (
+                f" Over capacity {capacity:g} from minute {peaks['first_over_minute']:g}."
+            )
+            overflows.append(depot_id)
+        print(line)
     require_shared_crew(tables)
     print(shared_crew_screen_message(len(tables)))
+    if fail_on_overflow and overflows:
+        names = ", ".join(overflows)
+        raise ValueError(f"Staging capacity exceeded at {names}.")
     return results
+
+
+def _write_staging(report_dir: Path, depot_id: str, peaks: dict, capacity: Optional[float]) -> None:
+    """One staging row for this dock. Written even when no capacity was set."""
+    pd.DataFrame(
+        [
+            {
+                "depot_id": depot_id,
+                "peak": peaks["peak"],
+                "peak_pallets": peaks.get("peak_pallets", peaks["peak"]),
+                "capacity": "" if capacity is None else capacity,
+                "over_capacity": peaks["over_capacity"],
+                "first_over_minute": "" if peaks["first_over_minute"] is None else peaks["first_over_minute"],
+            }
+        ]
+    ).to_csv(report_dir / "staging.csv", index=False)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
@@ -160,7 +286,25 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--withhold-if-late-at-start", action="store_true")
     parser.add_argument("--balance-weight", type=float, default=0.0)
     parser.add_argument("--time-limit", type=float, default=10.0)
+    parser.add_argument(
+        "--staging-capacity",
+        type=float,
+        default=None,
+        help="Report a pallet peak above this count. It does not change the solve.",
+    )
+    parser.add_argument(
+        "--staging-file",
+        type=Path,
+        default=None,
+        help="CSV of depot_id,capacity_pallets. A dock in this file uses its own count.",
+    )
+    parser.add_argument(
+        "--fail-on-staging-overflow",
+        action="store_true",
+        help="Raise after every dock report is written when a peak exceeds capacity.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
+    capacities = load_staging_capacities(args.staging_file) if args.staging_file is not None else None
     solve_docks(
         args.by_depot,
         pd.read_csv(args.pickers),
@@ -176,6 +320,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         withhold_if_late_at_start=args.withhold_if_late_at_start,
         balance_weight=args.balance_weight,
         time_limit=args.time_limit,
+        staging_capacity=args.staging_capacity,
+        staging_capacities=capacities,
+        fail_on_overflow=args.fail_on_staging_overflow,
     )
 
 

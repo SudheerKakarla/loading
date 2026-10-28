@@ -77,6 +77,8 @@ URGENCY_THIS_WAVE = 4.0
 URGENCY_NEXT_WAVE = 2.0
 URGENCY_LATER = 1.0
 MUST_SHIP_WEIGHT = 1.0e5
+# Optional pick mode. A blank cell means every mode.
+
 MAX_PRIORITY_WEIGHT = 1.0e6
 DEFAULT_TIER_MULTIPLIERS = {
     "key": 2.0,
@@ -552,14 +554,100 @@ def compute_priority_weight(
 # Phase 2: Assignment
 # ---------------------------------------------------------------------------
 
+def _mode_set(value: Any) -> Optional[frozenset]:
+    """Modes named in a cell. A missing or blank cell is ``None`` (any mode)."""
+    if _is_missing(value):
+        return None
+    text = str(value).strip()
+    if text == "" or text.lower() == "nan":
+        return None
+    modes = []
+    seen = set()
+    for part in text.split(";"):
+        token = part.strip().lower()
+        if token == "" or token in seen:
+            continue
+        seen.add(token)
+        modes.append(token)
+    if not modes:
+        return None
+    return frozenset(modes)
+
+
+def _named_pick_mode(value: Any, label: str) -> str:
+    """One lowercase mode, or blank. The name is free. ``label`` names the cell."""
+    modes = _mode_set(value)
+    if modes is None:
+        return ""
+    if len(modes) > 1:
+        raise ValueError(f"{label} column pick_mode holds more than one mode.")
+    return next(iter(modes))
+
+
+def _named_allowed_modes(value: Any, label: str) -> str:
+    """Semicolon list of modes. Blank means every mode. Names are free."""
+    del label
+    modes = _mode_set(value)
+    if modes is None:
+        return ""
+    return ";".join(sorted(modes))
+
+
+def _mode_allows(order_row, picker_row) -> bool:
+    """True when the job has no mode, the picker lists none, or the mode is listed."""
+    job = _mode_set(getattr(order_row, "pick_mode", None))
+    allowed = _mode_set(getattr(picker_row, "allowed_modes", None))
+    if job is None or allowed is None:
+        return True
+    return job <= allowed
+
+
+def _mode_allowed(job_mode: str, allowed_modes: str) -> bool:
+    """A blank job mode or a blank picker list allows the pair."""
+    if job_mode == "" or allowed_modes == "":
+        return True
+    return job_mode in allowed_modes.split(";")
+
+
+def effective_shift(picker) -> float:
+    """Shift minutes left after ``non_pick_minutes``. A blank duty leaves the full shift.
+
+    The result is never zero or negative. A duty that uses the whole shift raises.
+    """
+    picker_id = getattr(picker, "picker_id", None) or "picker"
+    try:
+        shift = float(picker.shift_duration)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{picker_id} column shift_duration must be a number.") from exc
+    if not math.isfinite(shift) or shift <= 0:
+        raise ValueError(f"{picker_id} column shift_duration must be a finite number > 0.")
+    raw = getattr(picker, "non_pick_minutes", None)
+    duty = 0.0
+    if not _is_missing(raw):
+        try:
+            duty = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{picker_id} column non_pick_minutes must be a number.") from exc
+        if not math.isfinite(duty) or duty < 0:
+            raise ValueError(f"{picker_id} column non_pick_minutes must be a finite number >= 0.")
+    available = shift - duty
+    if available <= 1e-6:
+        raise ValueError(f"{picker_id} column non_pick_minutes leaves no shift capacity.")
+    return available
+
+
 def _eligible(order_row, picker_row) -> bool:
     """C4 (equipment eligibility) and C2 (per-order weight/volume capacity).
 
     A blank equipment or volume cell is no constraint. ``pandas.read_csv``
     turns a blank cell into NaN, and ``_is_missing`` treats that NaN as empty.
+    ``pick_mode`` and ``allowed_modes`` are optional. A blank on either side
+    allows the pair. ``required_equipment`` stays the machine name.
     """
     required_equipment = getattr(order_row, "required_equipment", None)
     if not _is_missing(required_equipment) and required_equipment != picker_row.equipment_type:
+        return False
+    if not _mode_allows(order_row, picker_row):
         return False
     if order_row.total_weight > picker_row.max_weight:
         return False
@@ -621,7 +709,11 @@ def _public_assignment_result(
     solved: dict,
     solver_name: str,
 ) -> dict:
-    """Map a raw Gurobi or HiGHS solve into the phase-2 solution dictionary."""
+    """Map a raw Gurobi or HiGHS solve into the phase-2 solution dictionary.
+
+    ``eligible_pickers`` already applied equipment, pick mode, and capacity.
+    An order with nobody left is reported as ``no_eligible_picker``.
+    """
     is_optimal = bool(solved["is_optimal"])
     result = {
         "status": solved["status"],
@@ -993,7 +1085,7 @@ def _assignment_clock(
 
 
 def _picker_blockers(order_row: Any, picker_rows: Sequence[Any]) -> List[str]:
-    """One word per picker that cannot take the order: equipment or capacity."""
+    """One word per picker that cannot take the order: equipment, pick_mode, or capacity."""
     blockers = []
     for picker in picker_rows:
         if _eligible(order_row, picker):
@@ -1001,6 +1093,8 @@ def _picker_blockers(order_row: Any, picker_rows: Sequence[Any]) -> List[str]:
         required = getattr(order_row, "required_equipment", None)
         if not _is_missing(required) and required != picker.equipment_type:
             blockers.append("equipment")
+        elif not _mode_allows(order_row, picker):
+            blockers.append("pick_mode")
         else:
             blockers.append("capacity")
     return blockers
@@ -1281,8 +1375,12 @@ def solve_order_assignment(
     orders : rows with order_id, total_weight, total_volume (optional),
         priority_weight (optional; derived when missing), cutoff_time,
         account_tier, wait_time, required_equipment (all optional).
+        Optional ``pick_mode`` is ``bulk`` or ``pickface``. Blank allows any picker.
     pickers : rows with picker_id, equipment_type, max_weight, max_volume
-        (optional), shift_duration.
+        (optional), shift_duration. Optional ``allowed_modes`` is a
+        semicolon-separated list of those modes. Blank allows every mode.
+        Optional ``non_pick_minutes`` is subtracted from ``shift_duration``.
+        A blank cell subtracts nothing.
     route_durations : mapping order_id -> route duration, from phase 1.
     benchmark_mode : if True, every order's weight is set to 1 (plain count
         maximization), overriding ``priority_weight`` (C8).
@@ -1363,7 +1461,7 @@ def solve_order_assignment(
     full_duration = {o.order_id: float(route_durations[o.order_id]) for o in order_rows}
     full_deadlines, full_tiers = _assignment_clock(order_rows)
     picker_ids = [p.picker_id for p in picker_rows]
-    picker_shift = {p.picker_id: float(p.shift_duration) for p in picker_rows}
+    picker_shift = {p.picker_id: effective_shift(p) for p in picker_rows}
     shift_starts = {p.picker_id: _shift_start_minutes(p) for p in picker_rows}
     full_pairs = [
         (o.order_id, p.picker_id) for o in order_rows for p in picker_rows if _eligible(o, p)

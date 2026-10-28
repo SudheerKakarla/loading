@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from chunk_loads import read_mode_profile
 from chunk_model import (
     ChunkModelSettings,
     CoverCandidate,
@@ -13,6 +14,7 @@ from chunk_model import (
     chunk_loads_model,
     failure_reason,
     main,
+    required_equipment,
     solve_cover,
 )
 
@@ -436,3 +438,151 @@ def test_jack_tier_on_one_stop_keeps_the_orders_apart():
     )
     assert len(result.orders) == 2
     assert result.objective == pytest.approx(16.0)
+
+
+def test_cover_keeps_two_pick_modes_apart_and_a_blank_line_may_join():
+    """The cover uses the same mode rule as the savings chunker."""
+    travel = _axis({"DEPOT": 0.0, "A": 1.0})
+    apart = chunk_loads_model(
+        pd.DataFrame(
+            [
+                _line("BULK", "A", 10.0, pick_mode="bulk", source_order_id="O1"),
+                _line("FACE", "A", 10.0, pick_mode="pickface", source_order_id="O2"),
+            ]
+        ),
+        travel,
+        _crew(),
+        _settings(),
+    )
+    assert len(apart.orders) == 2
+    assert frozenset({"BULK", "FACE"}) not in _groups(apart.items)
+    assert set(apart.orders.pick_mode) == {"bulk", "pickface"}
+    mixed = chunk_loads_model(
+        pd.DataFrame(
+            [
+                _line("BULK", "A", 10.0, pick_mode="bulk", source_order_id="O1"),
+                _line("FACE", "A", 10.0, pick_mode="pickface", source_order_id="O1"),
+            ]
+        ),
+        travel,
+        _crew(),
+        _settings(),
+    )
+    assert len(mixed.orders) == 2
+    assert set(mixed.orders.pick_mode) == {"bulk", "pickface"}
+    joined = chunk_loads_model(
+        pd.DataFrame(
+            [
+                _line("BULK", "A", 10.0, pick_mode="bulk", source_order_id="O1"),
+                _line("OPEN", "A", 10.0, pick_mode="", source_order_id="O2"),
+            ]
+        ),
+        travel,
+        _crew(),
+        _settings(),
+    )
+    assert len(joined.orders) == 1
+    assert joined.orders.pick_mode.iloc[0] == "bulk"
+    assert set(joined.items.item_id) == {"BULK", "OPEN"}
+    plain = chunk_loads_model(
+        pd.DataFrame([_line("A", "A", 10.0), _line("B", "A", 10.0, source_order_id="O2")]),
+        travel,
+        _crew(),
+        _settings(),
+    )
+    assert "pick_mode" not in plain.orders.columns
+    assert "pick_mode" not in plain.items.columns
+
+
+def test_a_mode_with_no_picker_is_rejected():
+    """A bulk line stays out of the cover when every picker is pick-face only."""
+    face_only = [PickerSpec("P", "pallet_jack", 2500.0, 2.0, allowed_modes=("pickface",))]
+    assert failure_reason(10.0, 0.1, face_only, "bulk") == "no_picker_for_mode"
+    result = chunk_loads_model(
+        pd.DataFrame([_line("BULK", "A", 10.0, pick_mode="bulk")]),
+        _axis({"DEPOT": 0.0, "A": 1.0}),
+        face_only,
+        _settings(),
+    )
+    assert result.orders.empty
+    assert list(result.rejected.reason) == ["no_picker_for_mode"]
+    assert result.rejected.record_type.iloc[0] == "line"
+    both = [
+        PickerSpec("J", "pallet_jack", 2500.0, 2.0, allowed_modes=("pickface",)),
+        PickerSpec("F", "forklift", 5000.0, 4.0, allowed_modes=("bulk",)),
+    ]
+    assert required_equipment(100.0, 0.1, both, "bulk") == "forklift"
+    assert required_equipment(100.0, 0.1, both, "pickface") == ""
+
+
+def test_cover_records_the_mode_pick_time_and_a_one_line_bulk_cap(tmp_path: Path):
+    """Mode pick time is in the cover cost. A bulk line cap of 1 keeps two lines apart."""
+    profile = tmp_path / "mode_profile.csv"
+    profile.write_text(
+        "pick_mode,max_job_lines,default_pick_time,job_overhead,pallet_basis\n"
+        "bulk,1,1.5,5,line\n",
+        encoding="utf-8",
+    )
+    travel = _axis({"DEPOT": 0.0, "A": 1.0})
+    caps = read_mode_profile(profile)
+    timed = chunk_loads_model(
+        pd.DataFrame([_line("A", "A", 10.0, pick_mode="bulk")]),
+        travel,
+        _crew(),
+        _settings(job_overhead=5.0, default_pick_time=0.5, mode_caps=caps),
+    )
+    assert timed.items.pick_time.iloc[0] == pytest.approx(1.5)
+    assert "pick_minutes" not in timed.jobs.columns
+    assert timed.jobs.pallets.iloc[0] == 1
+    assert timed.objective == pytest.approx(8.5)
+    heavy = [PickerSpec("P", "pallet_jack", 5.0, 2.0, allowed_modes=("pickface",))]
+    assert failure_reason(10.0, 0.1, heavy, "bulk") == "exceeds_max_weight"
+    apart = chunk_loads_model(
+        pd.DataFrame(
+            [
+                _line("A", "A", 10.0, pick_mode="bulk", source_order_id="O1"),
+                _line("B", "A", 10.0, pick_mode="bulk", source_order_id="O2"),
+            ]
+        ),
+        travel,
+        _crew(),
+        _settings(mode_caps=caps),
+    )
+    assert len(apart.orders) == 2
+    merged = chunk_loads_model(
+        pd.DataFrame(
+            [
+                _line("A", "A", 10.0, pick_mode="bulk", source_order_id="O1"),
+                _line("B", "A", 10.0, pick_mode="bulk", source_order_id="O2"),
+            ]
+        ),
+        travel,
+        [PickerSpec("F", "forklift", 5000.0, 4.0, allowed_modes=("bulk",))],
+        _settings(),
+    )
+    assert len(merged.orders) == 1
+
+
+def test_cover_accepts_a_group_without_a_departure():
+    """group_id is the grouping key, and the wave cutoff is not reduced by the buffer."""
+    result = chunk_loads_model(
+        pd.DataFrame(
+            [
+                {
+                    "group_id": "G1",
+                    "depot_id": "DEPOT",
+                    "item_id": "A",
+                    "location_id": "A",
+                    "weight": 10.0,
+                    "volume": 0.1,
+                    "source_order_id": "O1",
+                }
+            ]
+        ),
+        _axis({"DEPOT": 0.0, "A": 1.0}),
+        _crew(),
+        _settings(wave_cutoff=40),
+    )
+    assert result.orders.truck_id.iloc[0] == "G1"
+    assert result.orders.cutoff_time.iloc[0] == pytest.approx(40)
+    assert result.rejected.empty

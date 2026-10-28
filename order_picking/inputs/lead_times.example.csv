@@ -1,0 +1,3 @@
+step,order,fixed_minutes,minutes_per_pallet,resource_count
+checker,1,1,2,1
+wrapping,2,1,3,1

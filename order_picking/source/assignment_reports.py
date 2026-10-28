@@ -359,19 +359,49 @@ _STAGING_ASSUMPTIONS = (
 )
 
 
+def _schedule_pallets(row: Mapping[str, Any], pallet_counts: Optional[Mapping[str, float]]) -> float:
+    """Pallets for one waiting job. The default, and a missing map, is 1."""
+    order_id = str(row.get("order_id", ""))
+    raw: Any = None
+    if pallet_counts is not None and order_id in pallet_counts:
+        raw = pallet_counts[order_id]
+    elif "pallets" in row:
+        raw = row.get("pallets")
+    if raw is None or raw == "":
+        return 1.0
+    try:
+        count = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"order {order_id} column pallets must be a number.") from exc
+    if not math.isfinite(count) or count <= 0:
+        raise ValueError(f"order {order_id} column pallets must be a finite number > 0.")
+    return count
+
+
 def staging_peaks(
     schedule: Sequence[Mapping[str, Any]],
     staging_buffer: float = 30.0,
+    pallets_by_job: Optional[Mapping[str, float]] = None,
+    capacity: Optional[float] = None,
+    pallet_counts: Optional[Mapping[str, float]] = None,
 ) -> dict:
-    """Peak count of jobs finished and not yet loaded.
+    """Peak pallets finished and not yet loaded.
 
     Departure is ``deadline_minute + staging_buffer``. Departures are applied
     before arrivals at the same minute, matching the half-open wait. Undated
-    jobs are omitted. The peak is not compared with a staging capacity.
+    jobs are omitted. Each job counts as one pallet unless ``pallets`` or
+    ``pallets_by_job`` says otherwise. ``pallet_counts`` is the same map.
+    ``peak_pallets`` is added when that map is given. ``capacity``,
+    ``over_capacity``, and ``first_over_minute`` are present whenever a
+    capacity is given. ``over_capacity`` stays false when it is omitted.
     """
+    if pallets_by_job is None:
+        pallets_by_job = pallet_counts
     if staging_buffer < 0 or not math.isfinite(staging_buffer):
         raise ValueError("staging_buffer must be a finite number >= 0.")
-    events: List[Tuple[float, int]] = []
+    if capacity is not None and (capacity < 0 or not math.isfinite(float(capacity))):
+        raise ValueError("staging capacity must be a finite number >= 0.")
+    events: List[Tuple[float, float]] = []
     finished_after = 0
     undated = 0
     counted = 0
@@ -386,25 +416,38 @@ def staging_peaks(
             finished_after += 1
             continue
         counted += 1
-        events.append((finish, 1))
-        events.append((departure, -1))
+        pallets = _schedule_pallets(row, pallets_by_job)
+        events.append((finish, pallets))
+        events.append((departure, -pallets))
     events.sort(key=lambda item: (item[0], item[1]))
-    current = 0
-    peak = 0
+    current = 0.0
+    peak = 0.0
     peak_minute: Optional[float] = None
+    over_capacity = False
+    first_over_minute: Optional[float] = None
     for minute, delta in events:
         current += delta
+        if capacity is not None and current > float(capacity) + _EPS and first_over_minute is None:
+            over_capacity = True
+            first_over_minute = minute
         if current > peak:
             peak = current
             peak_minute = minute
-    return {
+    report = {
         "peak": peak,
         "peak_minute": peak_minute,
         "jobs_counted": counted,
         "finished_after_departure": finished_after,
         "undated": undated,
         "assumptions": _STAGING_ASSUMPTIONS,
+        "over_capacity": over_capacity,
+        "first_over_minute": first_over_minute,
     }
+    if pallets_by_job is not None:
+        report["peak_pallets"] = peak
+    if capacity is not None:
+        report["capacity"] = float(capacity)
+    return report
 
 
 def late_jobs(schedule: Sequence[Mapping[str, Any]]) -> List[dict]:
@@ -422,12 +465,16 @@ def drop_detail(
     """Why an unassigned job was left out, given the solved workloads.
 
     ``blockers`` holds one word per picker when nobody is eligible:
-    ``equipment`` or ``capacity``. A job that fits someone's remaining
-    minutes was left for the objective. A job that fits nobody's remainder
-    is shift capacity.
+    ``equipment``, ``pick_mode``, or ``capacity``. A job that fits someone's
+    remaining minutes was left for the objective. A job that fits nobody's
+    remainder is shift capacity.
     """
     if not eligible_picker_ids:
         kinds = set(blockers)
+        if kinds == {"pick_mode"}:
+            return "pick_mode"
+        if "pick_mode" in kinds:
+            return "pick_mode_and_other"
         if kinds == {"equipment"}:
             return "equipment"
         if kinds == {"capacity"}:
@@ -440,6 +487,13 @@ def drop_detail(
     return "shift_capacity"
 
 
+def available_shift_minutes(picker: Any) -> float:
+    """Shift minutes left after optional non-picking duties."""
+    from order_picking_optimizer import effective_shift
+
+    return effective_shift(picker)
+
+
 def utilisation_rows(
     pickers: pd.DataFrame,
     workload: Mapping[str, float],
@@ -447,10 +501,8 @@ def utilisation_rows(
     """One row per picker. Busy minutes are the solved workload."""
     rows: List[dict] = []
     for picker in pickers.itertuples(index=False):
-        available = float(picker.shift_duration)
+        available = available_shift_minutes(picker)
         busy = float(workload.get(picker.picker_id, 0.0))
-        if available <= 0:
-            raise ValueError(f"{picker.picker_id} shift_duration must be > 0.")
         rows.append(
             {
                 "picker_id": picker.picker_id,

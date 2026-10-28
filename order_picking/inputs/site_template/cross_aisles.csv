@@ -1,0 +1,3 @@
+cross_id,y,x_min,x_max,one_way
+FRONT,0,0,4,
+BACK,10,0,4,

@@ -7,7 +7,14 @@ import pytest
 
 from assignment_reports import deadline_minutes
 from build_truck_loads import write_truck_loads
-from chunk_loads import ChunkSettings, chunk_loads, main, write_chunk_outputs
+from chunk_loads import (
+    ChunkSettings,
+    chunk_loads,
+    main,
+    optional_wave_values,
+    read_mode_profile,
+    write_chunk_outputs,
+)
 from order_picking_optimizer import compute_priority_weight, route_orders
 
 
@@ -346,3 +353,225 @@ def test_warehouse_truck_loads_keep_each_source_order_and_can_be_chunked(tmp_pat
     jobs = chunk_loads(truck, travel, _settings(max_job_weight=2500.0, max_job_volume=2.0))
     assert len(jobs.orders) < len(truck)
     assert set(jobs.items["location_id"]) == set(truck["location_id"])
+
+
+def test_two_pick_modes_stay_apart_and_a_blank_line_can_join():
+    """Named modes do not share a job. A blank mode may join either one."""
+    travel = _star("DEPOT", ["L1"])
+    settings = _settings(max_job_weight=500.0)
+    apart = chunk_loads(
+        _loads(
+            [
+                {
+                    "truck_id": "TRK1",
+                    "depot_id": "DEPOT",
+                    "item_id": "BULK",
+                    "location_id": "L1",
+                    "weight": 100.0,
+                    "pick_mode": "bulk",
+                },
+                {
+                    "truck_id": "TRK1",
+                    "depot_id": "DEPOT",
+                    "item_id": "FACE",
+                    "location_id": "L1",
+                    "weight": 100.0,
+                    "pick_mode": "pickface",
+                },
+            ]
+        ),
+        travel,
+        settings,
+    )
+    groups = {frozenset(group.item_id) for _, group in apart.items.groupby("order_id")}
+    assert groups == {frozenset({"BULK"}), frozenset({"FACE"})}
+    assert set(apart.orders.pick_mode) == {"bulk", "pickface"}
+    joined = chunk_loads(
+        _loads(
+            [
+                {
+                    "truck_id": "TRK1",
+                    "depot_id": "DEPOT",
+                    "item_id": "BULK",
+                    "location_id": "L1",
+                    "weight": 100.0,
+                    "pick_mode": "bulk",
+                },
+                {
+                    "truck_id": "TRK1",
+                    "depot_id": "DEPOT",
+                    "item_id": "OPEN",
+                    "location_id": "L1",
+                    "weight": 100.0,
+                    "pick_mode": "",
+                },
+            ]
+        ),
+        travel,
+        settings,
+    )
+    assert len(joined.orders) == 1
+    assert joined.orders.pick_mode.iloc[0] == "bulk"
+    assert set(joined.items.pick_mode) == {"bulk", ""}
+    plain = chunk_loads(
+        _loads(
+            [
+                {"truck_id": "TRK1", "depot_id": "DEPOT", "item_id": "A", "location_id": "L1", "weight": 100.0},
+                {"truck_id": "TRK1", "depot_id": "DEPOT", "item_id": "B", "location_id": "L1", "weight": 100.0},
+            ]
+        ),
+        travel,
+        settings,
+    )
+    assert "pick_mode" not in plain.orders.columns
+    assert "pick_mode" not in plain.items.columns
+    assert "pick_mode" not in plain.jobs.columns
+    assert "pallets" not in plain.jobs.columns
+    assert len(plain.orders) == 1
+    named = chunk_loads(
+        _loads(
+            [
+                {
+                    "truck_id": "TRK1",
+                    "depot_id": "DEPOT",
+                    "item_id": "A",
+                    "location_id": "L1",
+                    "weight": 100.0,
+                    "pick_mode": "reach",
+                }
+            ]
+        ),
+        travel,
+        settings,
+    )
+    assert named.orders.pick_mode.iloc[0] == "reach"
+    assert named.jobs.pick_mode.iloc[0] == "reach"
+
+
+def test_bulk_profile_keeps_one_line_and_writes_pallets(tmp_path: Path):
+    """A bulk line cap of 1 keeps the lines apart. Pallet counts appear only with a profile."""
+    profile = tmp_path / "mode_profile.csv"
+    profile.write_text(
+        "pick_mode,max_job_lines,max_job_weight,max_job_volume,default_pick_time,job_overhead,pallet_basis\n"
+        "bulk,1,,,1.5,5,line\n"
+        "pickface,15,,,0.5,5,line\n",
+        encoding="utf-8",
+    )
+    travel = _star("DEPOT", ["L1"])
+    rows = [
+        {"truck_id": "T", "depot_id": "DEPOT", "item_id": "A", "location_id": "L1", "weight": 10.0, "pick_mode": "bulk"},
+        {"truck_id": "T", "depot_id": "DEPOT", "item_id": "B", "location_id": "L1", "weight": 10.0, "pick_mode": "bulk"},
+    ]
+    result = chunk_loads(_loads(rows), travel, _settings(mode_caps=read_mode_profile(profile)))
+    assert len(result.orders) == 2
+    assert set(result.items.pick_time) == {1.5}
+    assert set(result.jobs.pallets) == {1}
+    assert "pick_minutes" not in result.jobs.columns
+    paired = chunk_loads(
+        _loads(
+            [
+                {"truck_id": "T", "depot_id": "DEPOT", "item_id": "A", "location_id": "L1", "weight": 10.0, "pick_mode": "pickface"},
+                {"truck_id": "T", "depot_id": "DEPOT", "item_id": "B", "location_id": "L1", "weight": 10.0, "pick_mode": "pickface"},
+            ]
+        ),
+        travel,
+        _settings(mode_caps=read_mode_profile(profile)),
+    )
+    assert len(paired.orders) == 1
+    assert paired.jobs.pallets.iloc[0] == 2
+    plain = chunk_loads(
+        _loads([{key: value for key, value in row.items() if key != "pick_mode"} for row in rows]),
+        travel,
+        _settings(),
+    )
+    assert len(plain.orders) == 1
+    assert "pick_minutes" not in plain.jobs.columns
+    assert "pallets" not in plain.jobs.columns
+
+
+def test_group_id_uses_the_wave_cutoff_and_truck_id_wins():
+    """A wave cutoff is stored as written. A filled truck id wins over the group id."""
+    travel = _star("DEPOT", ["L1"])
+    grouped = chunk_loads(
+        _loads(
+            [
+                {
+                    "group_id": "G1",
+                    "depot_id": "DEPOT",
+                    "item_id": "A",
+                    "location_id": "L1",
+                    "weight": 10.0,
+                }
+            ]
+        ),
+        travel,
+        _settings(wave_cutoff=90),
+    )
+    assert grouped.orders.truck_id.iloc[0] == "G1"
+    assert grouped.orders.cutoff_time.iloc[0] == pytest.approx(90)
+    assert "group_id" not in grouped.orders.columns
+    assert "truck_id" in grouped.jobs.columns
+    dated = chunk_loads(
+        _loads(
+            [
+                {
+                    "truck_id": "T1",
+                    "depot_id": "DEPOT",
+                    "item_id": "A",
+                    "location_id": "L1",
+                    "weight": 10.0,
+                    "departure_time": 100,
+                }
+            ]
+        ),
+        travel,
+        _settings(wave_cutoff=90, staging_buffer=30),
+    )
+    assert dated.orders.cutoff_time.iloc[0] == pytest.approx(70)
+    both = chunk_loads(
+        _loads(
+            [
+                {
+                    "truck_id": "T1",
+                    "group_id": "G9",
+                    "depot_id": "DEPOT",
+                    "item_id": "A",
+                    "location_id": "L1",
+                    "weight": 10.0,
+                }
+            ]
+        ),
+        travel,
+        _settings(),
+    )
+    assert both.orders.truck_id.iloc[0] == "T1"
+    with pytest.raises(ValueError, match="truck_id or group_id"):
+        chunk_loads(
+            _loads([{"depot_id": "DEPOT", "item_id": "A", "location_id": "L1", "weight": 10.0}]),
+            travel,
+            _settings(),
+        )
+
+
+def test_lead_times_replace_the_buffer(tmp_path: Path):
+    """Lead times replace the flat buffer with one pallet of each step."""
+    lead = tmp_path / "lead_times.csv"
+    lead.write_text(
+        "step,order,fixed_minutes,minutes_per_pallet,resource_count\n"
+        "wrap,1,6,4,1\n"
+        "check,2,2,1,2\n",
+        encoding="utf-8",
+    )
+    values = optional_wave_values(
+        type(
+            "Args",
+            (),
+            {
+                "staging_buffer": 30.0,
+                "lead_times": lead,
+                "mode_profile": None,
+                "wave_cutoff": None,
+            },
+        )()
+    )
+    assert values["staging_buffer"] == pytest.approx(13.0)

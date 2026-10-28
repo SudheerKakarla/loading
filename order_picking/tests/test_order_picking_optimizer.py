@@ -28,6 +28,7 @@ from order_picking_optimizer import (
     format_picking_solution,
     main,
     route_order,
+    _picker_blockers,
     solve_order_assignment,
     solve_order_picking,
 )
@@ -820,3 +821,47 @@ def test_wave_inputs_use_case_study_equipment(tmp_path):
     regenerated = write_wave(tmp_path / "wave", n_orders=300, seed=20261010)
     got = pd.read_csv(regenerated / "orders.csv")
     assert got.equals(orders)
+
+
+def test_bulk_job_skips_a_pickface_picker_and_a_blank_mode_does_not():
+    """A named mode needs a picker who allows it. A blank mode stays open."""
+    orders = pd.DataFrame(
+        [
+            {"order_id": "BULK", "total_weight": 1.0, "priority_weight": 1.0, "pick_mode": "bulk"},
+            {"order_id": "OPEN", "total_weight": 1.0, "priority_weight": 1.0, "pick_mode": ""},
+        ]
+    )
+    face = pd.DataFrame(
+        [
+            {
+                "picker_id": "P1",
+                "equipment_type": "pallet_jack",
+                "max_weight": 50.0,
+                "shift_duration": 100.0,
+                "allowed_modes": "pickface",
+            }
+        ]
+    )
+    durations = {"BULK": 5.0, "OPEN": 5.0}
+    blocked = solve_order_assignment(orders, face, durations, time_limit=10.0)
+    assert blocked["orders_fulfilled"] == ["OPEN"]
+    assert blocked["picker_assignments"]["P1"] == ["OPEN"]
+    assert blocked["orders_not_fulfilled"] == [{"order_id": "BULK", "reason": "no_eligible_picker"}]
+    assert blocked["drops"] == [
+        {"order_id": "BULK", "reason": "no_eligible_picker", "detail": "pick_mode"}
+    ]
+    order_rows = list(orders.itertuples(index=False))
+    picker_rows = list(face.itertuples(index=False))
+    assert _picker_blockers(order_rows[0], picker_rows) == ["pick_mode"]
+
+    anyone = face.copy()
+    anyone["allowed_modes"] = ""
+    open_result = solve_order_assignment(orders, anyone, durations, time_limit=10.0)
+    assert set(open_result["orders_fulfilled"]) == {"BULK", "OPEN"}
+
+    reach = orders.copy()
+    reach.loc[reach.order_id == "BULK", "pick_mode"] = "reach"
+    face_blocked = solve_order_assignment(reach, face, durations, time_limit=10.0)
+    assert face_blocked["orders_fulfilled"] == ["OPEN"]
+    open_reach = solve_order_assignment(reach, anyone, durations, time_limit=10.0)
+    assert set(open_reach["orders_fulfilled"]) == {"BULK", "OPEN"}

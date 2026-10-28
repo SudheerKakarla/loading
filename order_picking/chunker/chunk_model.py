@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -36,15 +36,23 @@ if _SOURCE not in sys.path:
 from chunk_loads import (  # noqa: E402
     ChunkResult,
     ChunkSettings,
+    ModeCaps,
     _Unit,
     _check_group,
     _frames,
+    _job_pick_mode,
     _job_record,
     _leg,
+    _modes_compatible,
     _nearest_neighbor,
     _number_jobs,
+    _overhead_of,
+    _pick_time_of,
     _read_lines,
     _savings_routes,
+    _within_mode_caps,
+    add_optional_wave_arguments,
+    optional_wave_values,
     write_chunk_outputs,
 )
 from order_picking_optimizer import (  # noqa: E402
@@ -53,6 +61,8 @@ from order_picking_optimizer import (  # noqa: E402
     MUST_SHIP_WEIGHT,
     _build_lookup,
     _is_missing,
+    _mode_set,
+    _named_pick_mode,
     _normalize_tier_table,
 )
 
@@ -70,6 +80,7 @@ class PickerSpec:
     equipment_type: str
     max_weight: float
     max_volume: Optional[float] = None
+    allowed_modes: Optional[frozenset] = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +121,14 @@ class ChunkModelSettings:
     ignore_volume: bool = False
     same_stop: bool = False
     jack_tier_merges: bool = False
+    mode_caps: Dict[str, ModeCaps] = field(default_factory=dict)
+    wave_cutoff: Optional[float] = None
+
+    def caps_for(self, mode: str) -> tuple:
+        """Effective line, weight, volume, pick time, and overhead for ``mode``."""
+        from mode_profile import effective_caps
+
+        return effective_caps(self, mode)
 
     def __post_init__(self) -> None:
         if self.max_job_lines < 1:
@@ -140,6 +159,10 @@ class ChunkModelSettings:
             raise ValueError("time_limit must be a finite number > 0.")
         if self.mip_gap < 0 or not math.isfinite(self.mip_gap):
             raise ValueError("mip_gap must be a finite number >= 0.")
+        if self.wave_cutoff is not None and (
+            self.wave_cutoff < 0 or not math.isfinite(self.wave_cutoff)
+        ):
+            raise ValueError("wave_cutoff must be a finite number >= 0 when set.")
 
 
 @dataclass(frozen=True)
@@ -204,32 +227,56 @@ def read_pickers(frame: pd.DataFrame) -> List[PickerSpec]:
             volume = float(row.max_volume)
             if not math.isfinite(volume) or volume <= 0:
                 raise ValueError(f"{label} max_volume must be a finite number > 0 when set.")
+        allowed = None
+        if hasattr(row, "allowed_modes"):
+            allowed = _mode_set(row.allowed_modes)
         specs.append(
             PickerSpec(
                 picker_id=picker_id,
                 equipment_type=str(equipment).strip(),
                 max_weight=weight,
                 max_volume=volume,
+                allowed_modes=allowed,
             )
         )
     return specs
+
+
+def _picker_allows_mode(picker: PickerSpec, pick_mode: str) -> bool:
+    """A blank mode or a blank allowed list lets this picker take the load."""
+    if pick_mode == "" or not picker.allowed_modes:
+        return True
+    return pick_mode in picker.allowed_modes
 
 
 def failure_reason(
     weight: float,
     volume: Optional[float],
     pickers: Sequence[PickerSpec],
+    mode: str = "",
 ) -> Optional[str]:
     """Why no single picker can carry this weight and volume, or None when one can.
 
     Weight and volume are judged together on each picker. A line that is under
     the heaviest picker's weight and under another picker's volume is still
-    rejected when no one picker satisfies both.
+    rejected when no one picker satisfies both. ``no_picker_for_mode`` is used
+    only when some picker fits the weight and volume and none of those pickers
+    allow the mode. A load that also fails weight or volume keeps that reason.
     """
-    if any(_picker_fits(weight, volume, picker) for picker in pickers):
-        return None
-    weight_ok = any(weight <= picker.max_weight + _EPS for picker in pickers)
-    volume_ok = any(_volume_fits(volume, picker) for picker in pickers)
+    named = _named_pick_mode(mode, "load")
+    physical = [picker for picker in pickers if _picker_fits(weight, volume, picker)]
+    if named:
+        if any(_picker_allows_mode(picker, named) for picker in physical):
+            return None
+        if physical:
+            return "no_picker_for_mode"
+        pool = [picker for picker in pickers if _picker_allows_mode(picker, named)] or list(pickers)
+    else:
+        if physical:
+            return None
+        pool = list(pickers)
+    weight_ok = any(weight <= picker.max_weight + _EPS for picker in pool)
+    volume_ok = any(_volume_fits(volume, picker) for picker in pool)
     if not weight_ok and not volume_ok:
         return "exceeds_max_weight_and_volume"
     if not weight_ok:
@@ -243,14 +290,19 @@ def required_equipment(
     weight: float,
     volume: Optional[float],
     pickers: Sequence[PickerSpec],
+    mode: str = "",
 ) -> str:
     """Blank when a pallet jack can carry the job. Otherwise that job's equipment.
 
     The live picker matches ``required_equipment`` as an exact string. A blank
     cell lets any picker take the job, and the weight and volume checks then
     drop a machine that is too small. A forklift-only job names ``forklift``.
+    ``mode`` keeps the choice to pickers who allow it. It is not written into
+    this equipment string.
     """
-    able = [picker for picker in pickers if _picker_fits(weight, volume, picker)]
+    named = _named_pick_mode(mode, "load")
+    pool = [picker for picker in pickers if _picker_allows_mode(picker, named)]
+    able = [picker for picker in pool if _picker_fits(weight, volume, picker)]
     if not able:
         raise ValueError("required_equipment was asked for a load no picker can carry.")
     if any(picker.equipment_type == "pallet_jack" for picker in able):
@@ -453,11 +505,13 @@ def chunk_loads_model(
 def write_model_outputs(result: ChunkModelResult, out_dir: Path) -> Path:
     """Write the picker files, one folder per dock, and ``rejected.csv``."""
     folder = write_chunk_outputs(result.as_chunk(), out_dir)
-    result.rejected.to_csv(folder / "rejected.csv", index=False)
+    id_name = "group_id" if "group_id" in result.orders.columns else "truck_id"
+    rejected = result.rejected.rename(columns={"truck_id": id_name})
+    rejected.to_csv(folder / "rejected.csv", index=False)
     pd.DataFrame(
         [
             {
-                "truck_id": solve.truck_id,
+                id_name: solve.truck_id,
                 "depot_id": solve.depot_id,
                 "minutes": solve.minutes,
                 "mip_gap": "" if solve.mip_gap is None else solve.mip_gap,
@@ -465,7 +519,7 @@ def write_model_outputs(result: ChunkModelResult, out_dir: Path) -> Path:
             }
             for solve in result.solves
         ],
-        columns=["truck_id", "depot_id", "minutes", "mip_gap", "fallback"],
+        columns=[id_name, "depot_id", "minutes", "mip_gap", "fallback"],
     ).to_csv(folder / "solve.csv", index=False)
     return folder
 
@@ -511,12 +565,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             "The default still sizes every job to the heaviest picker."
         ),
     )
+    add_optional_wave_arguments(parser)
     args = parser.parse_args(argv)
+    optional = optional_wave_values(args)
     settings = ChunkModelSettings(
         max_job_lines=args.max_job_lines,
         job_overhead=args.job_overhead,
         default_pick_time=args.default_pick_time,
-        staging_buffer=args.staging_buffer,
+        staging_buffer=optional["staging_buffer"],
         reference_order_lines=args.reference_order_lines,
         must_ship_weight=args.must_ship_weight,
         deadline_mode=args.deadline_mode,
@@ -529,6 +585,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         ignore_volume=args.ignore_volume,
         same_stop=args.destination_grouping,
         jack_tier_merges=args.jack_tier_merges,
+        mode_caps=optional["mode_caps"],
+        wave_cutoff=optional["wave_cutoff"],
     )
     result = chunk_loads_model(
         pd.read_csv(args.loads),
@@ -566,7 +624,10 @@ _REJECTED_COLUMNS = [
 ]
 
 
-def _picker_fits(weight: float, volume: Optional[float], picker: PickerSpec) -> bool:
+def _picker_fits(weight: float, volume: Optional[float], picker: PickerSpec, mode: str = "") -> bool:
+    """Weight and volume, and the mode when ``mode`` is a non-blank name."""
+    if mode and not _picker_allows_mode(picker, mode):
+        return False
     if weight > picker.max_weight + _EPS:
         return False
     return _volume_fits(volume, picker)
@@ -598,6 +659,8 @@ def _parse_settings(settings: ChunkModelSettings, pickers: Sequence[PickerSpec])
         deadline_mode=settings.deadline_mode,
         wave_hours=settings.wave_hours,
         wave_start=settings.wave_start,
+        mode_caps=dict(settings.mode_caps),
+        wave_cutoff=settings.wave_cutoff,
     )
 
 
@@ -640,7 +703,12 @@ def _reject_infeasible(
     rejected: List[dict] = []
     surviving = []
     for line in lines:
-        reason = failure_reason(line.weight, None if ignore_volume else line.volume, pickers)
+        reason = failure_reason(
+            line.weight,
+            None if ignore_volume else line.volume,
+            pickers,
+            line.pick_mode,
+        )
         if reason is None:
             surviving.append(line)
             continue
@@ -655,7 +723,8 @@ def _reject_infeasible(
     for (truck_id, order_id), group in sorted(by_order.items()):
         weight = float(sum(line.weight for line in group))
         volume = None if ignore_volume else _bundle_volume(group)
-        reason = failure_reason(weight, volume, pickers)
+        shared_mode = _job_pick_mode(group)
+        reason = failure_reason(weight, volume, pickers, "" if shared_mode is None else shared_mode)
         if reason is None:
             continue
         bad_orders.add((truck_id, order_id))
@@ -754,16 +823,18 @@ def _order_atoms(
     pickers: Sequence[PickerSpec],
     settings: ChunkModelSettings,
 ) -> List[list]:
-    """One atom per source order that fits in a single job. Other lines stay loose.
+    """One atom per source order and mode that fits in a single job.
 
-    A later step may put several atoms in one job. An order that fits a picker,
+    A source order with two modes becomes two atoms, because bulk and
+    pick-face are different tasks. A later step may put several atoms in
+    one job when their modes can share it. An order that fits a picker,
     the line cap, and the 16-location tour limit is not split.
     """
-    buckets: Dict[str, list] = {}
+    buckets: Dict[Tuple[str, str], list] = {}
     for line in lines:
         order_id = order_of[line.line_key]
-        key = line.line_key if order_id is None else order_id
-        buckets.setdefault(key, []).append(line)
+        source = line.line_key if order_id is None else order_id
+        buckets.setdefault((source, line.pick_mode or ""), []).append(line)
     atoms: List[list] = []
     for key in sorted(buckets):
         group = sorted(buckets[key], key=lambda line: line.line_key)
@@ -859,7 +930,7 @@ def _feasible_order_unions(
     def rec(start: int, weight: float, volume: float, locs: frozenset, must: bool, count: int) -> None:
         for index in range(start, len(atom_lines)):
             new_count = count + counts[index]
-            if new_count > settings.max_job_lines:
+            if new_count > _line_limit(settings):
                 continue
             new_locs = locs | locations[index]
             if len(new_locs) > _MAX_TOUR_STOPS:
@@ -905,7 +976,7 @@ def _line_above_jack(line, pickers: Sequence[PickerSpec], ignore_volume: bool) -
     if not jacks:
         return True
     volume = None if ignore_volume else line.volume
-    return failure_reason(line.weight, volume, jacks) is not None
+    return failure_reason(line.weight, volume, jacks, getattr(line, "pick_mode", "") or "") is not None
 
 
 def _jack_tier_blocks(
@@ -963,15 +1034,35 @@ def _bundle_ok(
     pickers: Sequence[PickerSpec],
     settings: ChunkModelSettings,
 ) -> bool:
-    if not lines or len(lines) > settings.max_job_lines:
+    if not lines:
+        return False
+    if not _modes_compatible(lines):
         return False
     if _tour_stops(lines, depot_id) > _MAX_TOUR_STOPS:
         return False
     if not _priority_ok(lines, settings.priority_max_lines):
         return False
+    if not _within_mode_caps(lines, settings):
+        return False
+    mode = _job_pick_mode(lines)
+    if mode is None:
+        return False
     volume = None if settings.ignore_volume else _bundle_volume(lines)
     weight = float(sum(line.weight for line in lines))
-    return failure_reason(weight, volume, pickers) is None
+    return failure_reason(weight, volume, pickers, mode) is None
+
+
+def _line_limit(settings: ChunkModelSettings) -> int:
+    """Global line cap, raised when a mode profile allows more lines.
+
+    The mode cap is still applied in ``_bundle_ok``. This ceiling only stops
+    the enumerator from dropping a looser mode before that check.
+    """
+    limit = settings.max_job_lines
+    for caps in settings.mode_caps.values():
+        if caps.max_job_lines is not None:
+            limit = max(limit, int(caps.max_job_lines))
+    return limit
 
 
 def _keep_order_whole(
@@ -1033,6 +1124,7 @@ def _cw_settings(settings: ChunkModelSettings, pickers: Sequence[PickerSpec]) ->
         max_job_lines=min(settings.max_job_lines, _MAX_TOUR_STOPS),
         job_overhead=settings.job_overhead,
         default_pick_time=0.0,
+        mode_caps=dict(settings.mode_caps),
     )
 
 
@@ -1058,10 +1150,8 @@ def _candidate_cost(
     tour_cache: Dict[Tuple[str, Tuple[str, ...]], float],
 ) -> float:
     walk = _held_karp(depot_id, [line.location_id for line in lines], lookup, tour_cache)
-    pick = 0.0
-    for line in lines:
-        pick += settings.default_pick_time if line.pick_time is None else line.pick_time
-    return walk + settings.job_overhead + pick
+    pick = sum(_pick_time_of(line, settings) for line in lines)
+    return walk + _overhead_of(lines, settings) + pick
 
 
 def _held_karp(
@@ -1137,7 +1227,12 @@ def _selected_job(
     record["walk"] = _held_karp(depot_id, [line.location_id for line in ordered], lookup, tour_cache)
     record["exceeds"] = False
     volume = None if ignore_volume else record["total_volume"]
-    record["required_equipment"] = required_equipment(record["total_weight"], volume, pickers)
+    record["required_equipment"] = required_equipment(
+        record["total_weight"],
+        volume,
+        pickers,
+        record["pick_mode"],
+    )
     return record
 
 

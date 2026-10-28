@@ -1,0 +1,20 @@
+# Stops follow the line order of order_items.csv (the chunker's tour order).
+picker_id,equipment_type,sequence,job_id,truck_id,depot_id,pick_mode,location_id,item_id,quantity,weight,planned_start_minute,planned_finish_minute,deadline_minute,minutes_late
+P1,pallet_jack,1,O1,,,,L-A1-01,I1,,,0.0,17.5,,0.0
+P1,pallet_jack,2,O1,,,,L-A1-03,I2,,,17.5,35.0,,0.0
+P1,pallet_jack,3,O2,,,,L-A2-02,I1,,,35.0,62.16666666666667,,0.0
+P1,pallet_jack,4,O2,,,,L-A3-01,I2,,,62.16666666666667,89.33333333333334,,0.0
+P1,pallet_jack,5,O2,,,,L-A3-04,I3,,,89.33333333333334,116.5,,0.0
+P1,pallet_jack,6,O3,,,,L-A6-05,I1,,,116.5,215.0,,0.0
+P1,pallet_jack,7,O5,,,,L-A2-01,I1,,,215.0,237.5,,0.0
+P1,pallet_jack,8,O5,,,,L-A2-04,I2,,,237.5,260.0,,0.0
+P1,pallet_jack,9,O5,,,,L-A5-02,I3,,,260.0,282.5,,0.0
+P1,pallet_jack,10,O5,,,,L-A5-05,I4,,,282.5,305.0,,0.0
+P1,pallet_jack,11,O5,,,,L-A6-01,I5,,,305.0,327.5,,0.0
+P1,pallet_jack,12,O6,,,,L-A1-05,I1,,,327.5,362.6666666666667,,0.0
+P1,pallet_jack,13,O6,,,,L-A6-02,I2,,,362.6666666666667,397.8333333333333,,0.0
+P1,pallet_jack,14,O6,,,,L-A6-04,I3,,,397.8333333333333,433.0,,0.0
+P3,forklift,1,O4,,,,L-A4-01,I1,,,0.0,18.0,,0.0
+P3,forklift,2,O4,,,,L-A4-02,I2,,,18.0,36.0,,0.0
+P3,forklift,3,O4,,,,L-A4-03,I3,,,36.0,54.0,,0.0
+P3,forklift,4,O4,,,,L-A4-04,I4,,,54.0,72.0,,0.0

@@ -9,6 +9,10 @@ Membership of a job comes from a directed Clarke-Wright savings heuristic.
 The lines inside a job are then ordered by nearest neighbor from that job's
 depot. Today's picker still takes one depot per solve, so the writer also
 splits the jobs into ``by_depot/<depot_id>/``.
+
+``group_id`` can stand in for ``truck_id``. When both are filled, ``truck_id``
+wins. The grouping key is stored in the ``truck_id`` column. Lines of one
+source order stay in one group.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ import argparse
 import math
 import numbers
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -28,6 +32,12 @@ _SOURCE = str(_ROOT / "source")
 if _SOURCE not in sys.path:
     sys.path.insert(0, _SOURCE)
 
+from mode_profile import (  # noqa: E402
+    ModeCaps,
+    effective_caps,
+    pallet_basis_for,
+    read_mode_profile,
+)
 from order_picking_optimizer import (  # noqa: E402
     DEFAULT_TIER_MULTIPLIERS,
     DEFAULT_WAVE_HOURS,
@@ -39,6 +49,7 @@ from order_picking_optimizer import (  # noqa: E402
     _is_truthy_flag,
     _normalize_tier_table,
     _tier_multiplier,
+    _named_pick_mode,
     _urgency_until_cutoff,
 )
 
@@ -75,10 +86,8 @@ JOB_COLUMNS = [
     "exceeds_capacity",
 ]
 
-_REQUIRED_LOAD_COLUMNS = ("truck_id", "depot_id", "item_id", "location_id", "weight")
+_REQUIRED_LOAD_COLUMNS = ("depot_id", "item_id", "location_id", "weight")
 _EPS = 1e-9
-
-
 @dataclass(frozen=True)
 class ChunkSettings:
     """Caps and weights for one chunker run. Times are minutes."""
@@ -95,6 +104,12 @@ class ChunkSettings:
     deadline_mode: str = "off"
     wave_hours: float = DEFAULT_WAVE_HOURS
     wave_start: Optional[str] = None
+    mode_caps: Dict[str, ModeCaps] = field(default_factory=dict)
+    wave_cutoff: Optional[float] = None
+
+    def caps_for(self, mode: str) -> tuple:
+        """Effective line, weight, volume, pick time, and overhead for ``mode``."""
+        return effective_caps(self, mode)
 
     def __post_init__(self) -> None:
         if self.max_job_weight <= 0 or not math.isfinite(self.max_job_weight):
@@ -119,6 +134,10 @@ class ChunkSettings:
             raise ValueError("deadline_mode must be off, soft, or hard.")
         if self.wave_hours <= 0 or not math.isfinite(self.wave_hours):
             raise ValueError("wave_hours must be a finite number > 0.")
+        if self.wave_cutoff is not None and (
+            self.wave_cutoff < 0 or not math.isfinite(self.wave_cutoff)
+        ):
+            raise ValueError("wave_cutoff must be a finite number >= 0 when set.")
 
 
 @dataclass(frozen=True)
@@ -137,6 +156,8 @@ class _Line:
     departure_minutes: Optional[float]
     account_tier: Optional[str]
     base_weight: Optional[float]
+    pick_mode: str = ""
+    cutoff_override: Optional[float] = None
 
 
 @dataclass
@@ -189,11 +210,14 @@ def chunk_loads(
     lines = _read_lines(loads, settings)
     if not lines:
         raise ValueError("The truck-load table has no lines.")
-    if settings.max_job_volume is not None:
+    volume_limited = settings.max_job_volume is not None or any(
+        caps.max_job_volume is not None for caps in settings.mode_caps.values()
+    )
+    if volume_limited:
         missing_volume = [line.item_id for line in lines if line.volume is None]
         if missing_volume:
             raise ValueError(
-                "A line is missing volume and max_job_volume is set "
+                "A line is missing volume and a volume cap is set "
                 f"({missing_volume[0]}). Supply a volume for every line."
             )
     tiers = _normalize_tier_table(DEFAULT_TIER_MULTIPLIERS)
@@ -238,6 +262,45 @@ def write_chunk_outputs(result: ChunkResult, out_dir: Path) -> Path:
     return folder
 
 
+def add_optional_wave_arguments(parser: argparse.ArgumentParser) -> None:
+    """Flags that stay off unless the caller passes a file or a number."""
+    parser.add_argument(
+        "--mode-profile",
+        type=Path,
+        default=None,
+        help="Per-mode caps and times. A blank cell keeps the global value.",
+    )
+    parser.add_argument(
+        "--wave-cutoff",
+        type=float,
+        default=None,
+        help="Cutoff for a line with no departure_time. Used as written, with no staging buffer subtracted.",
+    )
+    parser.add_argument(
+        "--lead-times",
+        type=Path,
+        default=None,
+        help="Replace --staging-buffer with the sum of one-pallet step times.",
+    )
+
+
+def optional_wave_values(args: argparse.Namespace) -> dict:
+    """Profile, cutoff, and the buffer after --lead-times."""
+    buffer = float(args.staging_buffer)
+    if getattr(args, "lead_times", None) is not None:
+        from downstream_check import staging_buffer_from_lead_times
+
+        buffer = staging_buffer_from_lead_times(args.lead_times)
+    profile: Dict[str, ModeCaps] = {}
+    if getattr(args, "mode_profile", None) is not None:
+        profile = read_mode_profile(args.mode_profile)
+    return {
+        "staging_buffer": buffer,
+        "mode_caps": profile,
+        "wave_cutoff": args.wave_cutoff,
+    }
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """Read a truck-load CSV and write picker jobs."""
     parser = argparse.ArgumentParser(
@@ -259,21 +322,25 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--deadline-mode", choices=("off", "soft", "hard"), default="off")
     parser.add_argument("--wave-hours", type=float, default=DEFAULT_WAVE_HOURS)
     parser.add_argument("--wave-start", default=None, help="Origin for datetime departures.")
+    add_optional_wave_arguments(parser)
     args = parser.parse_args(argv)
     weight_cap, volume_cap = _caps_from_args(args)
+    optional = optional_wave_values(args)
     settings = ChunkSettings(
         max_job_weight=weight_cap,
         max_job_volume=volume_cap,
         max_job_lines=args.max_job_lines,
         job_overhead=args.job_overhead,
         default_pick_time=args.default_pick_time,
-        staging_buffer=args.staging_buffer,
+        staging_buffer=optional["staging_buffer"],
         require_destination_grouping=args.destination_grouping,
         reference_order_lines=args.reference_order_lines,
         must_ship_weight=args.must_ship_weight,
         deadline_mode=args.deadline_mode,
         wave_hours=args.wave_hours,
         wave_start=args.wave_start,
+        mode_caps=optional["mode_caps"],
+        wave_cutoff=optional["wave_cutoff"],
     )
     loads = pd.read_csv(args.loads)
     travel = pd.read_csv(args.travel)
@@ -315,9 +382,13 @@ def _read_lines(loads: pd.DataFrame, settings: ChunkSettings) -> List[_Line]:
     missing = [name for name in _REQUIRED_LOAD_COLUMNS if name not in loads.columns]
     if missing:
         raise ValueError(f"Truck-load table is missing columns: {', '.join(missing)}.")
+    has_truck = "truck_id" in loads.columns
+    has_group = "group_id" in loads.columns
+    if not has_truck and not has_group:
+        raise ValueError("Truck-load table needs column truck_id or group_id.")
     lines: List[_Line] = []
     for index, row in enumerate(loads.itertuples(index=False)):
-        truck_id = _text(getattr(row, "truck_id"), f"row {index + 1} truck_id")
+        truck_id = _group_key(row, index, has_truck, has_group)
         depot_id = _text(getattr(row, "depot_id"), f"row {index + 1} depot_id")
         item_id = _text(getattr(row, "item_id"), f"row {index + 1} item_id")
         location_id = _text(getattr(row, "location_id"), f"row {index + 1} location_id")
@@ -343,6 +414,12 @@ def _read_lines(loads: pd.DataFrame, settings: ChunkSettings) -> List[_Line]:
         base = None
         if hasattr(row, "base_weight") and not _is_missing(row.base_weight):
             base = _nonnegative(row.base_weight, f"row {index + 1} base_weight")
+        pick_mode = ""
+        if hasattr(row, "pick_mode"):
+            pick_mode = _named_pick_mode(row.pick_mode, f"truck-load table row {index + 1}")
+        cutoff_override = None
+        if departure is None and settings.wave_cutoff is not None:
+            cutoff_override = float(settings.wave_cutoff)
         lines.append(
             _Line(
                 line_key=f"{index:06d}",
@@ -359,9 +436,26 @@ def _read_lines(loads: pd.DataFrame, settings: ChunkSettings) -> List[_Line]:
                 departure_minutes=departure,
                 account_tier=tier,
                 base_weight=base,
+                pick_mode=pick_mode,
+                cutoff_override=cutoff_override,
             )
         )
     return lines
+
+
+def _group_key(row, index: int, has_truck: bool, has_group: bool) -> str:
+    """``truck_id`` wins when both columns are filled. Otherwise ``group_id``."""
+    label = f"truck-load table row {index + 1}"
+    truck = ""
+    if has_truck and hasattr(row, "truck_id") and not _is_missing(row.truck_id):
+        truck = str(row.truck_id).strip()
+    if truck:
+        return truck
+    if has_group and hasattr(row, "group_id") and not _is_missing(row.group_id):
+        group = str(row.group_id).strip()
+        if group:
+            return group
+    raise ValueError(f"{label} needs a truck_id or a group_id.")
 
 
 def _check_group(lines: Sequence[_Line]) -> None:
@@ -372,20 +466,83 @@ def _check_group(lines: Sequence[_Line]) -> None:
         raise ValueError(f"{label} has more than one account_tier.")
     if len({line.base_weight for line in lines}) > 1:
         raise ValueError(f"{label} has more than one base_weight.")
+    if len({line.cutoff_override for line in lines}) > 1:
+        raise ValueError(f"{label} has more than one wave cutoff.")
 
 
-def _within_caps(lines: Sequence[_Line], settings: ChunkSettings) -> bool:
-    weight = sum(line.weight for line in lines)
-    if weight > settings.max_job_weight + _EPS:
+def _mode_caps_for(mode: Optional[str], settings) -> Optional[ModeCaps]:
+    if not mode:
+        return None
+    return settings.mode_caps.get(mode)
+
+
+def _modes_compatible(lines: Sequence[_Line]) -> bool:
+    """False when two different non-blank modes share the lines. A blank may join."""
+    named = {line.pick_mode for line in lines if line.pick_mode}
+    return len(named) <= 1
+
+
+def _within_mode_caps(lines: Sequence[_Line], settings) -> bool:
+    """Line, weight, and volume caps for this job's mode, over the global caps."""
+    if not _modes_compatible(lines):
         return False
-    if len(lines) > settings.max_job_lines:
+    mode = _job_pick_mode(lines)
+    if mode is None:
         return False
-    if settings.max_job_volume is None:
+    max_lines, max_weight, max_volume, _pick, _overhead = effective_caps(settings, mode or None)
+    if max_lines is not None and len(lines) > max_lines:
+        return False
+    if max_weight is not None and sum(line.weight for line in lines) > max_weight + _EPS:
+        return False
+    if max_volume is None:
         return True
     if any(line.volume is None for line in lines):
         return False
     volume = sum(line.volume or 0.0 for line in lines)
-    return volume <= settings.max_job_volume + _EPS
+    return volume <= max_volume + _EPS
+
+
+def _pick_time_of(line: _Line, settings) -> float:
+    """A line's own pick time, else its mode's time, else the global default."""
+    if line.pick_time is not None:
+        return float(line.pick_time)
+    caps = _mode_caps_for(line.pick_mode, settings)
+    if caps is not None and caps.default_pick_time is not None:
+        return float(caps.default_pick_time)
+    return float(settings.default_pick_time)
+
+
+def _overhead_of(lines: Sequence[_Line], settings) -> float:
+    mode = _job_pick_mode(lines)
+    caps = _mode_caps_for(mode, settings) if mode is not None else None
+    if caps is not None and caps.job_overhead is not None:
+        return float(caps.job_overhead)
+    return float(settings.job_overhead)
+
+
+def _job_pallets(lines: Sequence[_Line], settings) -> int:
+    """One pallet per job, or one per line when the mode's basis is ``line``."""
+    mode = _job_pick_mode(lines) or ""
+    if pallet_basis_for(settings, mode or None) == "line":
+        return max(1, len(lines))
+    return 1
+
+
+def _job_pick_mode(lines: Sequence[_Line]) -> Optional[str]:
+    """The one named mode, blank when every line is blank, or None when modes differ."""
+    modes = {line.pick_mode for line in lines if line.pick_mode}
+    if len(modes) > 1:
+        return None
+    if not modes:
+        return ""
+    return next(iter(modes))
+
+
+def _within_caps(lines: Sequence[_Line], settings: ChunkSettings) -> bool:
+    """Mode mix first, then the mode's caps. Savings and packing both use this."""
+    if not _modes_compatible(lines):
+        return False
+    return _within_mode_caps(lines, settings)
 
 
 def _leg(lookup: dict, origin: str, dest: str) -> float:
@@ -527,7 +684,7 @@ def _savings_routes(
                 _leg(lookup, origin, depot)
                 + _leg(lookup, depot, dest)
                 - _leg(lookup, origin, dest)
-                + settings.job_overhead
+                + _overhead_of(left.lines + right.lines, settings)
             )
             scored.append((saving, left.unit_id, right.unit_id))
     scored.sort(key=lambda item: (-item[0], item[1], item[2]))
@@ -557,9 +714,15 @@ def _savings_routes(
 
 def _job_record(lines: Sequence[_Line], lookup: dict, settings: ChunkSettings, tiers: dict) -> dict:
     first = lines[0]
+    pick_mode = _job_pick_mode(lines)
+    if pick_mode is None:
+        raise ValueError(f"{first.truck_id} at {first.depot_id} mixes pick_mode values in one job.")
     departure = first.departure_minutes
     cutoff = None
-    if departure is not None:
+    if first.cutoff_override is not None:
+        # A wave cutoff is the pick deadline itself. It is not a truck departure.
+        cutoff = float(first.cutoff_override)
+    elif departure is not None:
         cutoff = departure - settings.staging_buffer
         if cutoff < -_EPS:
             raise ValueError(
@@ -567,6 +730,7 @@ def _job_record(lines: Sequence[_Line], lookup: dict, settings: ChunkSettings, t
             )
     volume_values = [line.volume for line in lines]
     total_volume = None if any(value is None for value in volume_values) else sum(volume_values)
+    total_weight = sum(line.weight for line in lines)
     walk = _closed_walk(first.depot_id, lines, lookup)
     return {
         "truck_id": first.truck_id,
@@ -575,11 +739,13 @@ def _job_record(lines: Sequence[_Line], lookup: dict, settings: ChunkSettings, t
         "priority": _priority(lines, settings, tiers),
         "must_ship": any(line.must_ship for line in lines),
         "account_tier": first.account_tier or "",
-        "total_weight": sum(line.weight for line in lines),
+        "total_weight": total_weight,
         "total_volume": total_volume,
         "walk": walk,
         "exceeds": not _within_caps(lines, settings),
         "lines": list(lines),
+        "pick_mode": pick_mode,
+        "pallets": _job_pallets(lines, settings),
     }
 
 
@@ -602,6 +768,8 @@ def _derived_base(line: _Line, settings: ChunkSettings, tiers: dict) -> float:
     # for a later deadline constraint. It does not also raise the weight.
     if settings.deadline_mode in {"soft", "hard"}:
         urgency = 1.0
+    elif line.departure_minutes is None and line.cutoff_override is not None:
+        urgency = _urgency_until_cutoff(float(line.cutoff_override) / 60.0, settings.wave_hours)
     elif line.departure_minutes is None:
         urgency = 1.0
     else:
@@ -622,51 +790,66 @@ def _frames(jobs: Sequence[dict], settings: ChunkSettings) -> ChunkResult:
     order_rows = []
     item_rows = []
     job_rows = []
+    show_mode = any(line.pick_mode for job in jobs for line in job["lines"])
+    show_pallets = bool(settings.mode_caps)
+    order_columns = list(ORDER_COLUMNS)
+    item_columns = list(ITEM_COLUMNS)
+    job_columns = list(JOB_COLUMNS)
+    if show_mode:
+        order_columns.append("pick_mode")
+        item_columns.append("pick_mode")
+        job_columns.append("pick_mode")
+    if show_pallets:
+        job_columns.append("pallets")
     for job in jobs:
-        order_rows.append(
-            {
-                "order_id": job["job_id"],
-                "total_weight": job["total_weight"],
-                "total_volume": "" if job["total_volume"] is None else job["total_volume"],
-                "priority_weight": job["priority"],
-                "cutoff_time": "" if job["cutoff"] is None else job["cutoff"],
-                "account_tier": job["account_tier"],
-                "wait_time": "",
-                "must_ship": "true" if job["must_ship"] else "",
-                "required_equipment": job.get("required_equipment", ""),
-                "truck_id": job["truck_id"],
-                "depot_id": job["depot_id"],
-            }
-        )
+        order_row = {
+            "order_id": job["job_id"],
+            "total_weight": job["total_weight"],
+            "total_volume": "" if job["total_volume"] is None else job["total_volume"],
+            "priority_weight": job["priority"],
+            "cutoff_time": "" if job["cutoff"] is None else job["cutoff"],
+            "account_tier": job["account_tier"],
+            "wait_time": "",
+            "must_ship": "true" if job["must_ship"] else "",
+            "required_equipment": job.get("required_equipment", ""),
+            "truck_id": job["truck_id"],
+            "depot_id": job["depot_id"],
+        }
+        if show_mode:
+            order_row["pick_mode"] = job.get("pick_mode", "")
+        order_rows.append(order_row)
         for line in job["lines"]:
-            pick_time = line.pick_time if line.pick_time is not None else settings.default_pick_time
-            item_rows.append(
-                {
-                    "order_id": job["job_id"],
-                    "item_id": line.item_id,
-                    "location_id": line.location_id,
-                    "quantity": line.quantity,
-                    "weight": line.weight,
-                    "volume": "" if line.volume is None else line.volume,
-                    "pick_time": pick_time,
-                }
-            )
-        job_rows.append(
-            {
-                "job_id": job["job_id"],
-                "truck_id": job["truck_id"],
-                "depot_id": job["depot_id"],
-                "cutoff_time": "" if job["cutoff"] is None else job["cutoff"],
-                "priority_weight": job["priority"],
-                "walk_minutes": job["walk"],
-                "line_count": len(job["lines"]),
-                "exceeds_capacity": job["exceeds"],
+            item_row = {
+                "order_id": job["job_id"],
+                "item_id": line.item_id,
+                "location_id": line.location_id,
+                "quantity": line.quantity,
+                "weight": line.weight,
+                "volume": "" if line.volume is None else line.volume,
+                "pick_time": _pick_time_of(line, settings),
             }
-        )
+            if show_mode:
+                item_row["pick_mode"] = line.pick_mode
+            item_rows.append(item_row)
+        job_row = {
+            "job_id": job["job_id"],
+            "truck_id": job["truck_id"],
+            "depot_id": job["depot_id"],
+            "cutoff_time": "" if job["cutoff"] is None else job["cutoff"],
+            "priority_weight": job["priority"],
+            "walk_minutes": job["walk"],
+            "line_count": len(job["lines"]),
+            "exceeds_capacity": job["exceeds"],
+        }
+        if show_mode:
+            job_row["pick_mode"] = job.get("pick_mode", "")
+        if show_pallets:
+            job_row["pallets"] = job["pallets"]
+        job_rows.append(job_row)
     return ChunkResult(
-        orders=pd.DataFrame(order_rows, columns=ORDER_COLUMNS),
-        items=pd.DataFrame(item_rows, columns=ITEM_COLUMNS),
-        jobs=pd.DataFrame(job_rows, columns=JOB_COLUMNS),
+        orders=pd.DataFrame(order_rows, columns=order_columns),
+        items=pd.DataFrame(item_rows, columns=item_columns),
+        jobs=pd.DataFrame(job_rows, columns=job_columns),
     )
 
 

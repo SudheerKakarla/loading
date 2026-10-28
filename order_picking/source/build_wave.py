@@ -23,6 +23,8 @@ from typing import List, Sequence, Tuple
 
 import pandas as pd
 
+from order_picking_optimizer import _named_allowed_modes
+
 _EXAMPLE_FILES = (
     "aisles.csv",
     "cross_aisles.csv",
@@ -102,7 +104,9 @@ def load_crew(path: Path) -> pd.DataFrame:
 
     ``count`` is how many pickers use that machine. ``max_weight`` is kilograms
     per trip. ``max_volume`` and ``shift_duration`` are that machine's other
-    caps. Shift minutes live in this file, on each row. A missing file, a
+    caps. Shift minutes live in this file, on each row. Optional
+    ``allowed_modes`` is a free lowercase list separated by semicolons.
+    A blank cell allows every mode. A missing file, a
     missing column, a blank type, a duplicate type, or a count below 1 raises
     ``ValueError``.
     """
@@ -117,6 +121,9 @@ def load_crew(path: Path) -> pd.DataFrame:
     if frame.empty:
         raise ValueError(f"Crew file {crew_path} has no equipment rows.")
 
+    has_modes = "allowed_modes" in frame.columns
+    has_home = "home_depot" in frame.columns
+    has_duty = "non_pick_minutes" in frame.columns
     rows: List[dict] = []
     seen: set[str] = set()
     for index, raw in frame.iterrows():
@@ -127,16 +134,30 @@ def load_crew(path: Path) -> pd.DataFrame:
         if equipment in seen:
             raise ValueError(f"Crew {label} repeats equipment_type {equipment}.")
         seen.add(equipment)
-        rows.append(
-            {
-                "equipment_type": equipment,
-                "count": _positive_int(raw["count"], f"{label} count"),
-                "max_weight": _positive_number(raw.max_weight, f"{label} max_weight"),
-                "max_volume": _positive_number(raw.max_volume, f"{label} max_volume"),
-                "shift_duration": _positive_number(raw.shift_duration, f"{label} shift_duration"),
-            }
-        )
-    return pd.DataFrame(rows, columns=list(_CREW_COLUMNS))
+        row = {
+            "equipment_type": equipment,
+            "count": _positive_int(raw["count"], f"{label} count"),
+            "max_weight": _positive_number(raw.max_weight, f"{label} max_weight"),
+            "max_volume": _positive_number(raw.max_volume, f"{label} max_volume"),
+            "shift_duration": _positive_number(raw.shift_duration, f"{label} shift_duration"),
+        }
+        if has_modes:
+            row["allowed_modes"] = _named_allowed_modes(raw["allowed_modes"], f"Crew {label}")
+        if has_home:
+            home = "" if pd.isna(raw["home_depot"]) else str(raw["home_depot"]).strip()
+            row["home_depot"] = "" if home.lower() == "nan" else home
+        if has_duty:
+            row["non_pick_minutes"] = _optional_duty(raw["non_pick_minutes"], f"{label} column non_pick_minutes")
+        rows.append(row)
+    columns = list(_CREW_COLUMNS)
+    for name, present in (
+        ("allowed_modes", has_modes),
+        ("home_depot", has_home),
+        ("non_pick_minutes", has_duty),
+    ):
+        if present:
+            columns.append(name)
+    return pd.DataFrame(rows, columns=columns)
 
 
 def load_wave_settings(path: Path) -> WaveSettings:
@@ -273,17 +294,20 @@ def _checked_settings(raw: dict[str, object], path: Path) -> WaveSettings:
 def _pickers(crew: pd.DataFrame) -> pd.DataFrame:
     rows = []
     number = 1
+    extras = [name for name in crew.columns if name not in _CREW_COLUMNS]
     for crew_row in crew.itertuples(index=False):
         for _ in range(int(crew_row.count)):
-            rows.append(
-                {
-                    "picker_id": f"P{number:02d}",
-                    "equipment_type": crew_row.equipment_type,
-                    "max_weight": float(crew_row.max_weight),
-                    "max_volume": float(crew_row.max_volume),
-                    "shift_duration": float(crew_row.shift_duration),
-                }
-            )
+            row = {
+                "picker_id": f"P{number:02d}",
+                "equipment_type": crew_row.equipment_type,
+                "max_weight": float(crew_row.max_weight),
+                "max_volume": float(crew_row.max_volume),
+                "shift_duration": float(crew_row.shift_duration),
+            }
+            for name in extras:
+                value = getattr(crew_row, name)
+                row[name] = "" if pd.isna(value) else value
+            rows.append(row)
             number += 1
     return pd.DataFrame(rows)
 
@@ -355,19 +379,19 @@ def _orders_and_items(
             tier, priority, must_ship = "key", settings.key_priority, ""
         else:
             tier, priority, must_ship = "standard", settings.standard_priority, ""
-        order_rows.append(
-            {
-                "order_id": order_id,
-                "total_weight": weight,
-                "total_volume": volume,
-                "required_equipment": equipment,
-                "account_tier": tier,
-                "cutoff_time": "",
-                "wait_time": round(rng.uniform(settings.wait_min_hours, settings.wait_max_hours), 1),
-                "must_ship": must_ship,
-                "priority_weight": priority,
-            }
-        )
+        pick_time = settings.pick_time
+        order_row = {
+            "order_id": order_id,
+            "total_weight": weight,
+            "total_volume": volume,
+            "required_equipment": equipment,
+            "account_tier": tier,
+            "cutoff_time": "",
+            "wait_time": round(rng.uniform(settings.wait_min_hours, settings.wait_max_hours), 1),
+            "must_ship": must_ship,
+            "priority_weight": priority,
+        }
+        order_rows.append(order_row)
         n_lines = rng.randint(settings.min_lines, line_hi)
         for line, slot in enumerate(rng.sample(list(slots), n_lines), start=1):
             item_rows.append(
@@ -375,10 +399,19 @@ def _orders_and_items(
                     "order_id": order_id,
                     "item_id": f"I{line}",
                     "location_id": slot,
-                    "pick_time": settings.pick_time,
+                    "pick_time": pick_time,
                 }
             )
     return pd.DataFrame(order_rows), pd.DataFrame(item_rows)
+
+
+def _optional_duty(value: object, label: str) -> object:
+    if pd.isna(value) or str(value).strip() == "":
+        return ""
+    number = _finite(value, label)
+    if number < 0:
+        raise ValueError(f"{label} must be a finite number >= 0.")
+    return number
 
 
 def _lightest_that_carries(by_weight: pd.DataFrame, weight: int) -> pd.Series:

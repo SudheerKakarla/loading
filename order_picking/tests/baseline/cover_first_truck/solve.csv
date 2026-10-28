@@ -1,0 +1,2 @@
+truck_id,depot_id,minutes,mip_gap,fallback
+TRK01,PACK_A,253.19999999999996,0.0,False

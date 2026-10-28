@@ -1,0 +1,3 @@
+location_id,aisle_id,y,location_type
+L1,A1,3,pickface
+L2,A2,6,bulk

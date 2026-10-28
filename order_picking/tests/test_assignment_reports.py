@@ -139,6 +139,7 @@ def test_drop_detail_names_equipment_capacity_shift_and_tradeoff():
     assert drop_detail(["equipment"], [], 5.0, {}, {}) == "equipment"
     assert drop_detail(["capacity"], [], 5.0, {}, {}) == "capacity"
     assert drop_detail(["equipment", "capacity"], [], 5.0, {}, {}) == "equipment_and_capacity"
+    assert drop_detail(["pick_mode"], [], 5.0, {}, {}) == "pick_mode"
     assert drop_detail([], ["P1"], 4.0, {"P1": 9.0}, {"P1": 10.0}) == "shift_capacity"
     assert drop_detail([], ["P1"], 4.0, {"P1": 1.0}, {"P1": 10.0}) == "priority_tradeoff"
 
@@ -771,3 +772,153 @@ def test_run_docks_checks_the_shift_from_the_crew_file(tmp_path, monkeypatch, ca
     fit = pd.read_csv(tmp_path / "fit" / "PACK_B" / "utilisation.csv")
     assert fit.iloc[0]["available_minutes"] == pytest.approx(400.0)
     assert fit.iloc[0]["busy_minutes"] == pytest.approx(150.0)
+
+
+def test_staging_capacity_reports_the_first_minute_over_the_peak():
+    """No capacity leaves the peak report. A capacity of one flags the second pallet."""
+    waiting = [
+        {"order_id": "A", "finish_minute": 10.0, "deadline_minute": 20.0},
+        {"order_id": "B", "finish_minute": 15.0, "deadline_minute": 20.0},
+    ]
+    plain = staging_peaks(waiting, staging_buffer=30.0)
+    assert plain["peak"] == 2
+    assert plain["over_capacity"] is False
+    assert plain["first_over_minute"] is None
+    over = staging_peaks(waiting, staging_buffer=30.0, capacity=1)
+    assert over["over_capacity"] is True
+    assert over["first_over_minute"] == pytest.approx(15.0)
+    counted = staging_peaks(
+        waiting,
+        staging_buffer=30.0,
+        capacity=3,
+        pallet_counts={"A": 2, "B": 2},
+    )
+    assert counted["peak"] == pytest.approx(4)
+    assert counted["first_over_minute"] == pytest.approx(15.0)
+
+
+def test_non_pick_minutes_shrink_the_shift_and_a_blank_does_not():
+    """Duties reduce the minutes the solver and the utilisation table both use."""
+    orders = pd.DataFrame(
+        [
+            {
+                "order_id": "O1",
+                "total_weight": 10.0,
+                "total_volume": 0.1,
+                "priority_weight": 1.0,
+                "required_equipment": "",
+                "cutoff_time": "",
+            }
+        ]
+    )
+    on_duty = pd.DataFrame(
+        [
+            {
+                "picker_id": "P1",
+                "equipment_type": "pallet_jack",
+                "max_weight": 100.0,
+                "max_volume": 2.0,
+                "shift_duration": 100.0,
+                "non_pick_minutes": 40.0,
+            }
+        ]
+    )
+    blocked = solve_order_assignment(orders, on_duty, {"O1": 70.0})
+    assert blocked["orders_fulfilled"] == []
+    free = on_duty.drop(columns=["non_pick_minutes"])
+    released = solve_order_assignment(orders, free, {"O1": 70.0})
+    assert released["orders_fulfilled"] == ["O1"]
+    rows = utilisation_rows(on_duty, {"P1": 50.0})
+    assert rows[0]["available_minutes"] == pytest.approx(60.0)
+    with pytest.raises(ValueError, match="P1"):
+        require_shared_crew(
+            [
+                pd.DataFrame(utilisation_rows(on_duty, {"P1": 40.0})),
+                pd.DataFrame(utilisation_rows(on_duty, {"P1": 30.0})),
+            ]
+        )
+
+
+def _quiet_solve(orders, items, crew, matrix, depot_id, **kwargs):
+    return {
+        "is_optimal": True,
+        "picker_workload": {picker_id: 10.0 for picker_id in crew.picker_id},
+        "picker_assignments": {},
+        "orders_fulfilled": [],
+        "orders_not_fulfilled": [],
+        "drops": [],
+        "schedule": [
+            {"order_id": "J1", "finish_minute": 0.0, "deadline_minute": 10.0, "minutes_late": 0.0},
+            {"order_id": "J2", "finish_minute": 5.0, "deadline_minute": 10.0, "minutes_late": 0.0},
+        ],
+        "objective_value": 0.0,
+        "status": 0,
+        "stop": "proven",
+        "solver_bound": 0.0,
+        "solver_gap": 0.0,
+        "solver_abs_gap": 0.0,
+        "mip_rel_gap_used": 0.0,
+        "mip_abs_gap_used": 0.2,
+        "objective_upper_used": 1.0,
+        "runtime": 0.0,
+        "time_limit_hit": False,
+        "stages": [],
+    }
+
+
+def test_home_depot_hides_a_picker_and_staging_overflow_is_only_a_report(tmp_path, monkeypatch, capsys):
+    """A named home stays off the other dock. Overflow is printed and does not stop the screen."""
+    import run_docks
+
+    by_depot = tmp_path / "by_depot"
+    _write_depot(by_depot / "PACK_A")
+    _write_depot(by_depot / "PACK_B")
+    pickers = pd.DataFrame(
+        [
+            {
+                "picker_id": "P1",
+                "equipment_type": "pallet_jack",
+                "max_weight": 50.0,
+                "shift_duration": 400.0,
+                "home_depot": "PACK_A",
+            },
+            {
+                "picker_id": "P2",
+                "equipment_type": "pallet_jack",
+                "max_weight": 50.0,
+                "shift_duration": 400.0,
+                "home_depot": "",
+            },
+        ]
+    )
+    seen = {}
+
+    def fake_solve(orders, items, crew, matrix, depot_id, **kwargs):
+        seen[depot_id] = list(crew.picker_id)
+        return _quiet_solve(orders, items, crew, matrix, depot_id, **kwargs)
+
+    monkeypatch.setattr(run_docks, "solve_order_picking", fake_solve)
+    travel = pd.DataFrame(columns=["from_location", "to_location", "travel_time"])
+    out = tmp_path / "out"
+    run_docks.solve_docks(by_depot, pickers, travel, out, staging_capacity=1)
+    assert seen["PACK_A"] == ["P1", "P2"]
+    assert seen["PACK_B"] == ["P2"]
+    assert list(pd.read_csv(out / "PACK_B" / "utilisation.csv").picker_id) == ["P2"]
+    screen = capsys.readouterr().out
+    assert not (out / "staging_overflow.csv").exists()
+    for depot_id in ("PACK_A", "PACK_B"):
+        staging = pd.read_csv(out / depot_id / "staging.csv")
+        assert staging.depot_id.iloc[0] == depot_id
+        assert staging.peak.iloc[0] == pytest.approx(2)
+        assert bool(staging.over_capacity.iloc[0]) is True
+        assert f"Staging {depot_id}:" in screen
+    with pytest.raises(ValueError, match="PACK_A"):
+        run_docks.solve_docks(
+            by_depot,
+            pickers,
+            travel,
+            tmp_path / "failed",
+            staging_capacity=1,
+            fail_on_overflow=True,
+        )
+    assert (tmp_path / "failed" / "PACK_B" / "staging.csv").is_file()
