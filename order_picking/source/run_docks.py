@@ -171,6 +171,7 @@ def solve_docks(
     staging_capacity: Optional[float] = None,
     staging_capacities: Optional[Dict[str, float]] = None,
     fail_on_overflow: bool = False,
+    staging_buffer: float = 30.0,
 ) -> List[dict]:
     """Solve each depot, write its reports, then screen the summed minutes.
 
@@ -179,12 +180,16 @@ def solve_docks(
     is that total. Clock overlap and the walk between docks stay outside it.
     A named ``home_depot`` keeps that picker off the other docks. A blank home
     is still eligible everywhere, so one crew can still be counted twice.
-    Staging capacity is a report. It does not change the solve.
+    Staging capacity is a report. It does not change the solve. ``staging.csv``
+    is written only when a capacity is set. Departure is the deadline plus
+    ``staging_buffer`` (30 minutes unless the caller passes another buffer).
     """
     if staging_capacity is not None and (
         not math.isfinite(staging_capacity) or staging_capacity < 0
     ):
         raise ValueError("staging capacity must be a finite number >= 0.")
+    if staging_buffer < 0 or not math.isfinite(staging_buffer):
+        raise ValueError("staging_buffer must be a finite number >= 0.")
     folders = depot_folders(by_depot, depots)
     tables = []
     results: List[dict] = []
@@ -230,10 +235,12 @@ def solve_docks(
         counts = _job_pallet_counts(folder)
         peaks = staging_peaks(
             result.get("schedule") or [],
+            staging_buffer=staging_buffer,
             pallets_by_job=counts,
             capacity=capacity,
         )
-        _write_staging(report_dir, depot_id, peaks, capacity)
+        if capacity is not None:
+            _write_staging(report_dir, depot_id, peaks, capacity)
         minute = peaks["peak_minute"]
         minute_text = "none" if minute is None else f"{minute:g}"
         line = f"Staging {depot_id}: peak {peaks['peak']:g} pallets at minute {minute_text}."
@@ -251,8 +258,8 @@ def solve_docks(
     return results
 
 
-def _write_staging(report_dir: Path, depot_id: str, peaks: dict, capacity: Optional[float]) -> None:
-    """One staging row for this dock. Written even when no capacity was set."""
+def _write_staging(report_dir: Path, depot_id: str, peaks: dict, capacity: float) -> None:
+    """One staging row for this dock. Called only when a capacity was set."""
     pd.DataFrame(
         [
             {
@@ -303,8 +310,25 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         action="store_true",
         help="Raise after every dock report is written when a peak exceeds capacity.",
     )
+    parser.add_argument(
+        "--staging-buffer",
+        type=float,
+        default=30.0,
+        help="Minutes after the deadline before staged pallets leave. Default 30.",
+    )
+    parser.add_argument(
+        "--lead-times",
+        type=Path,
+        default=None,
+        help="Replace --staging-buffer with the sum of one-pallet step times.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     capacities = load_staging_capacities(args.staging_file) if args.staging_file is not None else None
+    buffer = float(args.staging_buffer)
+    if args.lead_times is not None:
+        from downstream_check import staging_buffer_from_lead_times
+
+        buffer = staging_buffer_from_lead_times(args.lead_times)
     solve_docks(
         args.by_depot,
         pd.read_csv(args.pickers),
@@ -323,6 +347,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         staging_capacity=args.staging_capacity,
         staging_capacities=capacities,
         fail_on_overflow=args.fail_on_staging_overflow,
+        staging_buffer=buffer,
     )
 
 

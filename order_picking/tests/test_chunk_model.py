@@ -191,6 +191,38 @@ def test_a_missing_highs_vector_is_not_a_cover():
     assert chosen is not None and chosen[0].candidate_id == "only"
 
 
+def test_two_modes_of_one_order_are_judged_apart():
+    """3000 kg bulk and 3000 kg pick-face each fit the forklift. Together they do not."""
+    loads = pd.DataFrame(
+        [
+            _line("BULK", "A", 3000.0, pick_mode="bulk"),
+            _line("FACE", "B", 3000.0, pick_mode="pickface"),
+        ]
+    )
+    result = chunk_loads_model(loads, _axis({"DEPOT": 0.0, "A": 1.0, "B": 2.0}), _crew(), _settings())
+    assert result.rejected.empty
+    assert len(result.orders) == 2
+    assert set(result.orders.pick_mode) == {"bulk", "pickface"}
+
+
+def test_one_mode_of_an_order_can_fail_while_the_other_stays():
+    """The two bulk lines together exceed the forklift. The pick-face line does not."""
+    loads = pd.DataFrame(
+        [
+            _line("BULK1", "A", 3000.0, pick_mode="bulk", source_order_id="O1"),
+            _line("BULK2", "B", 3000.0, pick_mode="bulk", source_order_id="O1"),
+            _line("FACE", "C", 10.0, pick_mode="pickface", source_order_id="O1"),
+        ]
+    )
+    result = chunk_loads_model(
+        loads, _axis({"DEPOT": 0.0, "A": 1.0, "B": 2.0, "C": 3.0}), _crew(), _settings()
+    )
+    assert set(result.items.item_id) == {"FACE"}
+    assert list(result.rejected.record_type) == ["order"]
+    assert result.rejected.record_id.iloc[0] == "O1"
+    assert result.rejected.reason.iloc[0] == "exceeds_max_weight"
+
+
 def test_order_heavier_than_every_picker_is_rejected_without_a_job():
     """Each 3000 kg line fits the forklift. The 6000 kg order does not, so it is not split."""
     loads = pd.DataFrame(

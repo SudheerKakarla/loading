@@ -15,31 +15,31 @@ th { background: #d9e2ec; }
 </head>
 <body>
 <h1>Picker task sheet</h1>
-<p>Stops follow the line order of order_items.csv (the chunker's tour order).</p>
+<p>Stops follow the line order of order_items.csv (the chunker's tour order). Stop times are the walk along that order plus each line's pick time. The walk back to the dock is not a row. Without a travel file those cells are blank.</p>
 <h2>P1 (pallet_jack)</h2>
 <table>
 <tr><th>picker_id</th><th>equipment_type</th><th>sequence</th><th>job_id</th><th>truck_id</th><th>depot_id</th><th>pick_mode</th><th>location_id</th><th>item_id</th><th>quantity</th><th>weight</th><th>planned_start_minute</th><th>planned_finish_minute</th><th>deadline_minute</th><th>minutes_late</th></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>1</td><td>O1</td><td></td><td></td><td></td><td>L-A1-01</td><td>I1</td><td></td><td></td><td>0.0</td><td>17.5</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>2</td><td>O1</td><td></td><td></td><td></td><td>L-A1-03</td><td>I2</td><td></td><td></td><td>17.5</td><td>35.0</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>3</td><td>O2</td><td></td><td></td><td></td><td>L-A2-02</td><td>I1</td><td></td><td></td><td>35.0</td><td>62.16666666666667</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>4</td><td>O2</td><td></td><td></td><td></td><td>L-A3-01</td><td>I2</td><td></td><td></td><td>62.16666666666667</td><td>89.33333333333334</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>5</td><td>O2</td><td></td><td></td><td></td><td>L-A3-04</td><td>I3</td><td></td><td></td><td>89.33333333333334</td><td>116.5</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>6</td><td>O3</td><td></td><td></td><td></td><td>L-A6-05</td><td>I1</td><td></td><td></td><td>116.5</td><td>215.0</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>7</td><td>O5</td><td></td><td></td><td></td><td>L-A2-01</td><td>I1</td><td></td><td></td><td>215.0</td><td>237.5</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>8</td><td>O5</td><td></td><td></td><td></td><td>L-A2-04</td><td>I2</td><td></td><td></td><td>237.5</td><td>260.0</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>9</td><td>O5</td><td></td><td></td><td></td><td>L-A5-02</td><td>I3</td><td></td><td></td><td>260.0</td><td>282.5</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>10</td><td>O5</td><td></td><td></td><td></td><td>L-A5-05</td><td>I4</td><td></td><td></td><td>282.5</td><td>305.0</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>11</td><td>O5</td><td></td><td></td><td></td><td>L-A6-01</td><td>I5</td><td></td><td></td><td>305.0</td><td>327.5</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>12</td><td>O6</td><td></td><td></td><td></td><td>L-A1-05</td><td>I1</td><td></td><td></td><td>327.5</td><td>362.6666666666667</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>13</td><td>O6</td><td></td><td></td><td></td><td>L-A6-02</td><td>I2</td><td></td><td></td><td>362.6666666666667</td><td>397.8333333333333</td><td></td><td>0.0</td></tr>
-<tr><td>P1</td><td>pallet_jack</td><td>14</td><td>O6</td><td></td><td></td><td></td><td>L-A6-04</td><td>I3</td><td></td><td></td><td>397.8333333333333</td><td>433.0</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>1</td><td>O1</td><td></td><td></td><td></td><td>L-A1-01</td><td>I1</td><td></td><td></td><td>5.0</td><td>5.5</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>2</td><td>O1</td><td></td><td></td><td></td><td>L-A1-03</td><td>I2</td><td></td><td></td><td>17.5</td><td>18.0</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>3</td><td>O2</td><td></td><td></td><td></td><td>L-A2-02</td><td>I1</td><td></td><td></td><td>50.0</td><td>50.5</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>4</td><td>O2</td><td></td><td></td><td></td><td>L-A3-01</td><td>I2</td><td></td><td></td><td>66.5</td><td>67.0</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>5</td><td>O2</td><td></td><td></td><td></td><td>L-A3-04</td><td>I3</td><td></td><td></td><td>85.0</td><td>85.5</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>6</td><td>O3</td><td></td><td></td><td></td><td>L-A6-05</td><td>I1</td><td></td><td></td><td>165.5</td><td>166.0</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>7</td><td>O5</td><td></td><td></td><td></td><td>L-A2-01</td><td>I1</td><td></td><td></td><td>224.0</td><td>224.5</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>8</td><td>O5</td><td></td><td></td><td></td><td>L-A2-04</td><td>I2</td><td></td><td></td><td>242.5</td><td>243.0</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>9</td><td>O5</td><td></td><td></td><td></td><td>L-A5-02</td><td>I3</td><td></td><td></td><td>267.0</td><td>267.5</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>10</td><td>O5</td><td></td><td></td><td></td><td>L-A5-05</td><td>I4</td><td></td><td></td><td>285.5</td><td>286.0</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>11</td><td>O5</td><td></td><td></td><td></td><td>L-A6-01</td><td>I5</td><td></td><td></td><td>314.0</td><td>314.5</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>12</td><td>O6</td><td></td><td></td><td></td><td>L-A1-05</td><td>I1</td><td></td><td></td><td>356.5</td><td>357.0</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>13</td><td>O6</td><td></td><td></td><td></td><td>L-A6-02</td><td>I2</td><td></td><td></td><td>395.0</td><td>395.5</td><td></td><td>0.0</td></tr>
+<tr><td>P1</td><td>pallet_jack</td><td>14</td><td>O6</td><td></td><td></td><td></td><td>L-A6-04</td><td>I3</td><td></td><td></td><td>407.5</td><td>408.0</td><td></td><td>0.0</td></tr>
 </table>
 <h2>P3 (forklift)</h2>
 <table>
 <tr><th>picker_id</th><th>equipment_type</th><th>sequence</th><th>job_id</th><th>truck_id</th><th>depot_id</th><th>pick_mode</th><th>location_id</th><th>item_id</th><th>quantity</th><th>weight</th><th>planned_start_minute</th><th>planned_finish_minute</th><th>deadline_minute</th><th>minutes_late</th></tr>
-<tr><td>P3</td><td>forklift</td><td>1</td><td>O4</td><td></td><td></td><td></td><td>L-A4-01</td><td>I1</td><td></td><td></td><td>0.0</td><td>18.0</td><td></td><td>0.0</td></tr>
-<tr><td>P3</td><td>forklift</td><td>2</td><td>O4</td><td></td><td></td><td></td><td>L-A4-02</td><td>I2</td><td></td><td></td><td>18.0</td><td>36.0</td><td></td><td>0.0</td></tr>
-<tr><td>P3</td><td>forklift</td><td>3</td><td>O4</td><td></td><td></td><td></td><td>L-A4-03</td><td>I3</td><td></td><td></td><td>36.0</td><td>54.0</td><td></td><td>0.0</td></tr>
-<tr><td>P3</td><td>forklift</td><td>4</td><td>O4</td><td></td><td></td><td></td><td>L-A4-04</td><td>I4</td><td></td><td></td><td>54.0</td><td>72.0</td><td></td><td>0.0</td></tr>
+<tr><td>P3</td><td>forklift</td><td>1</td><td>O4</td><td></td><td></td><td></td><td>L-A4-01</td><td>I1</td><td></td><td></td><td>17.0</td><td>17.5</td><td></td><td>0.0</td></tr>
+<tr><td>P3</td><td>forklift</td><td>2</td><td>O4</td><td></td><td></td><td></td><td>L-A4-02</td><td>I2</td><td></td><td></td><td>23.5</td><td>24.0</td><td></td><td>0.0</td></tr>
+<tr><td>P3</td><td>forklift</td><td>3</td><td>O4</td><td></td><td></td><td></td><td>L-A4-03</td><td>I3</td><td></td><td></td><td>30.0</td><td>30.5</td><td></td><td>0.0</td></tr>
+<tr><td>P3</td><td>forklift</td><td>4</td><td>O4</td><td></td><td></td><td></td><td>L-A4-04</td><td>I4</td><td></td><td></td><td>36.5</td><td>37.0</td><td></td><td>0.0</td></tr>
 </table>
 </body></html>

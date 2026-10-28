@@ -69,7 +69,6 @@ from order_picking_optimizer import (  # noqa: E402
 _EPS = 1e-9
 _MAX_TOUR_STOPS = 16
 CellKey = Tuple[str, str, str]
-OrderKey = Tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -503,15 +502,17 @@ def chunk_loads_model(
 
 
 def write_model_outputs(result: ChunkModelResult, out_dir: Path) -> Path:
-    """Write the picker files, one folder per dock, and ``rejected.csv``."""
+    """Write the picker files, one folder per dock, and ``rejected.csv``.
+
+    A wave's ``group_id`` is already stored in ``truck_id``. These reports
+    use that column.
+    """
     folder = write_chunk_outputs(result.as_chunk(), out_dir)
-    id_name = "group_id" if "group_id" in result.orders.columns else "truck_id"
-    rejected = result.rejected.rename(columns={"truck_id": id_name})
-    rejected.to_csv(folder / "rejected.csv", index=False)
+    result.rejected.to_csv(folder / "rejected.csv", index=False)
     pd.DataFrame(
         [
             {
-                id_name: solve.truck_id,
+                "truck_id": solve.truck_id,
                 "depot_id": solve.depot_id,
                 "minutes": solve.minutes,
                 "mip_gap": "" if solve.mip_gap is None else solve.mip_gap,
@@ -519,7 +520,7 @@ def write_model_outputs(result: ChunkModelResult, out_dir: Path) -> Path:
             }
             for solve in result.solves
         ],
-        columns=[id_name, "depot_id", "minutes", "mip_gap", "fallback"],
+        columns=["truck_id", "depot_id", "minutes", "mip_gap", "fallback"],
     ).to_csv(folder / "solve.csv", index=False)
     return folder
 
@@ -713,28 +714,28 @@ def _reject_infeasible(
             surviving.append(line)
             continue
         rejected.append(_rejection(line.truck_id, line.depot_id, "line", line.line_key, line.item_id, reason, line.weight, line.volume))
-    by_order: Dict[OrderKey, list] = {}
+    by_order: Dict[tuple, list] = {}
     for line in surviving:
         order_id = order_of[line.line_key]
         if order_id is None:
             continue
-        by_order.setdefault((line.truck_id, order_id), []).append(line)
+        by_order.setdefault((line.truck_id, order_id, line.pick_mode or ""), []).append(line)
     bad_orders = set()
-    for (truck_id, order_id), group in sorted(by_order.items()):
+    for (truck_id, order_id, mode), group in sorted(by_order.items()):
         weight = float(sum(line.weight for line in group))
         volume = None if ignore_volume else _bundle_volume(group)
-        shared_mode = _job_pick_mode(group)
-        reason = failure_reason(weight, volume, pickers, "" if shared_mode is None else shared_mode)
+        reason = failure_reason(weight, volume, pickers, mode)
         if reason is None:
             continue
-        bad_orders.add((truck_id, order_id))
+        bad_orders.add((truck_id, order_id, mode))
         rejected.append(
             _rejection(truck_id, group[0].depot_id, "order", order_id, "", reason, weight, volume)
         )
     kept = []
     for line in surviving:
         order_id = order_of[line.line_key]
-        if order_id is not None and (line.truck_id, order_id) in bad_orders:
+        mode = line.pick_mode or ""
+        if order_id is not None and (line.truck_id, order_id, mode) in bad_orders:
             continue
         kept.append(line)
     return kept, rejected
@@ -1053,16 +1054,8 @@ def _bundle_ok(
 
 
 def _line_limit(settings: ChunkModelSettings) -> int:
-    """Global line cap, raised when a mode profile allows more lines.
-
-    The mode cap is still applied in ``_bundle_ok``. This ceiling only stops
-    the enumerator from dropping a looser mode before that check.
-    """
-    limit = settings.max_job_lines
-    for caps in settings.mode_caps.values():
-        if caps.max_job_lines is not None:
-            limit = max(limit, int(caps.max_job_lines))
-    return limit
+    """Global line cap. A mode cap can tighten a bundle, not enlarge it."""
+    return settings.max_job_lines
 
 
 def _keep_order_whole(

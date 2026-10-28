@@ -448,6 +448,29 @@ def test_two_pick_modes_stay_apart_and_a_blank_line_can_join():
     assert named.jobs.pick_mode.iloc[0] == "reach"
 
 
+def test_mode_weight_cap_cannot_loosen_the_global_cap():
+    """A mode weight above the global cap does not merge lines the global cap keeps apart."""
+    from mode_profile import ModeCaps
+
+    rows = [
+        {"truck_id": "T", "depot_id": "DEPOT", "item_id": "A", "location_id": "L1", "weight": 80.0, "pick_mode": "bulk"},
+        {"truck_id": "T", "depot_id": "DEPOT", "item_id": "B", "location_id": "L1", "weight": 80.0, "pick_mode": "bulk"},
+    ]
+    travel = _star("DEPOT", ["L1"])
+    loose = chunk_loads(
+        _loads(rows),
+        travel,
+        _settings(max_job_weight=100.0, mode_caps={"bulk": ModeCaps(max_job_weight=1000.0)}),
+    )
+    assert len(loose.orders) == 2
+    tight = chunk_loads(
+        _loads(rows),
+        travel,
+        _settings(max_job_weight=1000.0, mode_caps={"bulk": ModeCaps(max_job_weight=100.0)}),
+    )
+    assert len(tight.orders) == 2
+
+
 def test_bulk_profile_keeps_one_line_and_writes_pallets(tmp_path: Path):
     """A bulk line cap of 1 keeps the lines apart. Pallet counts appear only with a profile."""
     profile = tmp_path / "mode_profile.csv"

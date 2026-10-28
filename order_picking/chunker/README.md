@@ -2,7 +2,7 @@
 
 Splits one truck's pick lines into jobs a picker can carry in one trip. The picker in `../source/` then routes and assigns those jobs. This folder does not read a LoadMax solve.
 
-Input columns: `truck_id` or `group_id`, `depot_id`, `item_id`, `location_id`, `weight`. Optional: `destination_id`, `quantity`, `volume`, `pick_time`, `departure_time`, `must_ship`, `account_tier`, `base_weight`, `pick_mode`. `pick_mode` is a free lowercase name. A blank cell has no mode. Other extra columns are kept and ignored. When `truck_id` and `group_id` are both filled, `truck_id` is the key. The key is stored in the `truck_id` column. Lines of one source order stay in one group. A table with neither id raises. A truck table is unchanged when `group_id` is absent.
+Input columns: `truck_id` or `group_id`, `depot_id`, `item_id`, `location_id`, `weight`. Optional: `destination_id`, `quantity`, `volume`, `pick_time`, `departure_time`, `must_ship`, `account_tier`, `base_weight`, `pick_mode`. `pick_mode` is a free lowercase name. A blank cell has no mode. Other extra columns are kept and ignored. When `truck_id` and `group_id` are both filled, `truck_id` is the key. The key is stored in the `truck_id` column. Lines of one source order and one mode stay in one group. A table with neither id raises. A truck table is unchanged when `group_id` is absent.
 
 `inputs/chunk_warehouse/truck_loads.csv` is a sample built from the eight-aisle warehouse. Each source order stays in one group. Trucks are filled to about 8–12 tonnes and alternate between `PACK_A` and `PACK_B`. `sku_id` and `source_order_id` are labels only. `account_tier` is blank because one truck mixes key and standard orders, and the chunker allows one tier per truck. The picker orders in `inputs/layout_warehouse` are not this file: those trips have no truck and no line weight. Rebuild the sample with `python chunker/build_truck_loads.py`.
 
@@ -23,7 +23,7 @@ Outputs:
 | `jobs.csv` | Cutoff, priority, walking minutes, and whether the job is over the cap. `pick_mode` is added with the order column. `pallets` appears only when `--mode-profile` is set |
 | `by_depot/<depot_id>/` | The same files for one dock |
 
-`--mode-profile` reads `pick_mode,max_job_lines,max_job_weight,max_job_volume,default_pick_time,job_overhead,pallet_basis`. A blank cell keeps the global chunker value. `pallet_basis` is `job` (one pallet per job, the default) or `line` (one pallet per line). The per-mode weight and volume caps sit on top of the picker limits. `walk_minutes` stays the walk. On the cover, the mode's pick time and overhead are added after the Held-Karp tour. `inputs/mode_profile.example.csv` is an illustration, not a site measurement:
+`--mode-profile` reads `pick_mode,max_job_lines,max_job_weight,max_job_volume,default_pick_time,job_overhead,pallet_basis`. A blank cell keeps the global chunker value. A filled line, weight, or volume cap is the smaller of that number and the global cap. `pallet_basis` is `job` (one pallet per job, the default) or `line` (one pallet per line). The per-mode weight and volume caps sit on top of the picker limits. `walk_minutes` stays the walk. On the cover, the mode's pick time and overhead are added after the Held-Karp tour. `inputs/mode_profile.example.csv` is an illustration, not a site measurement:
 
 | pick_mode | max_job_lines | max_job_weight | max_job_volume | default_pick_time | job_overhead | pallet_basis |
 |-----------|---------------|----------------|----------------|-------------------|--------------|--------------|

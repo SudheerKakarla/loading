@@ -15,6 +15,7 @@ from pathlib import Path
 
 from loadmax.container_loading_highs import ContainerLoadingOptimizerHiGHS, LoadObj
 from loadmax.data_reader import (
+    _normalize_im_input,
     capacity_infeasible_message,
     read_im_input_csv,
     resolve_capacity_classes,
@@ -440,6 +441,73 @@ class CapacityClassTests(unittest.TestCase):
         self.assertEqual(sum(row["r"] for row in rows.values()), 2)
         self.assertEqual(len(rows), 2)
 
+    def test_partial_fraction_keeps_the_penalty_below_the_partial(self):
+        params = make_instance(
+            n_trucks=2,
+            n_pos=2,
+            n_layers=1,
+            fill_demand=0,
+            r_demand=1,
+            r_partial=True,
+            partial_fraction=0.3,
+            cap_r=1,
+            priorities={1: 800, 2: 300},
+        )
+        plan = resolve_capacity_classes(params)
+        self.assertAlmostEqual(plan.lambda_r, 45.0)
+        self.assertAlmostEqual(plan.mu_mix, 22.5)
+
+    def test_unset_container_zero_does_not_shrink_the_penalty(self):
+        params = make_instance(
+            n_trucks=1,
+            n_pos=2,
+            n_layers=1,
+            fill_demand=0,
+            r_demand=1,
+            cap_r=1,
+            priorities={1: 800},
+        )
+        params["containerList"] = [0, 1]
+        params["container_priority"] = {1: 800}
+        _normalize_im_input(params)
+        plan = resolve_capacity_classes(params)
+        self.assertEqual(params["container_priority"][0], 0.5)
+        self.assertEqual(plan.lambda_r, 400.0)
+
+        explicit = make_instance(
+            n_trucks=1,
+            n_pos=2,
+            n_layers=1,
+            fill_demand=0,
+            r_demand=1,
+            cap_r=1,
+            priorities={1: 800},
+        )
+        explicit["containerList"] = [0, 1]
+        explicit["container_priority"] = {0: 0.5, 1: 800}
+        _normalize_im_input(explicit)
+        explicit_plan = resolve_capacity_classes(explicit)
+        self.assertAlmostEqual(explicit_plan.lambda_r, 0.25)
+
+    def test_hard_mode_counts_each_trucks_own_cap(self):
+        params = make_instance(
+            n_trucks=4,
+            n_pos=4,
+            n_layers=2,
+            fill_demand=0,
+            r_demand=10,
+            cap_r=6,
+            truck_caps={1: 3, 2: 3, 3: 3, 4: 8},
+            mode="hard",
+            consolidation_weight=0,
+        )
+        plan = resolve_capacity_classes(params)
+        self.assertEqual(plan.truck_limit, 3)
+        _, result, solution, instructions = solve(params)
+        self.assertEqual(result["status"], 0, result["message"])
+        self.assertEqual(sum(1 for item in instructions if item.palletID == "CLASS_R"), 10)
+        self.assertEqual(sum(solution["rc_present"].values()), 3)
+
     def test_weight_utilization_uses_the_truck_cap(self):
         def row_for(container, weight):
             item = LoadObj()
@@ -547,6 +615,8 @@ class CapacityClassTests(unittest.TestCase):
         self.assertFalse(plan.report)
         self.assertFalse(plan.class_r_active)
         self.assertFalse(plan.use_per_truck_wt)
+        self.assertEqual(plan.lambda_r, 0.0)
+        self.assertEqual(plan.mu_mix, 0.0)
 
 
 if __name__ == "__main__":

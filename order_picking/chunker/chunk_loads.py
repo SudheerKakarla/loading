@@ -268,7 +268,7 @@ def add_optional_wave_arguments(parser: argparse.ArgumentParser) -> None:
         "--mode-profile",
         type=Path,
         default=None,
-        help="Per-mode caps and times. A blank cell keeps the global value.",
+        help="Per-mode caps and times. A blank cell keeps the global value. A filled cap cannot raise it.",
     )
     parser.add_argument(
         "--wave-cutoff",
@@ -483,7 +483,7 @@ def _modes_compatible(lines: Sequence[_Line]) -> bool:
 
 
 def _within_mode_caps(lines: Sequence[_Line], settings) -> bool:
-    """Line, weight, and volume caps for this job's mode, over the global caps."""
+    """Tighter of the global cap and this job's mode cap."""
     if not _modes_compatible(lines):
         return False
     mode = _job_pick_mode(lines)

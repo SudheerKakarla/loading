@@ -1200,10 +1200,10 @@ class ContainerLoadingOptimizerHiGHS:
     def _add_capacity_class_constraints(self) -> None:
         """Nominal caps, class presence, and conditional pallet caps.
 
-        The presence link is two-sided. ``sum(y) <= M * indicator`` forces the
-        indicator on when a class pallet is loaded. ``sum(y) >= indicator``
-        keeps it off when the truck has none, so a zero penalty cannot tighten
-        the cap of a truck that does not hold the class.
+        Each class assignment forces the indicator on (``y <= indicator``).
+        ``sum(y) >= indicator`` keeps it off when the truck has none, so a
+        zero penalty cannot tighten the cap of a truck that does not hold
+        the class. A truck smaller than the class cap keeps its own nominal.
         """
         plan = self._cap_plan
         if plan is None or not plan.has_rule:
@@ -1223,23 +1223,23 @@ class ContainerLoadingOptimizerHiGHS:
             for vehicle in veh_id:
                 cb.add_le(self._occupancy_coeffs(vehicle), float(plan.nominal_cap[vehicle]))
 
-        def _presence(vehicle: Any, full_set: set, prtl_set: set, name: str, big: int) -> None:
+        def _presence(vehicle: Any, full_set: set, prtl_set: set, name: str) -> None:
             loaded = self._class_load_coeffs(vehicle, full_set, "y_full")
             loaded.update(self._class_load_coeffs(vehicle, prtl_set, "y_prtl"))
-            upper = dict(loaded)
-            upper[reg[name, vehicle]] = -float(big)
-            cb.add_le(upper, 0.0)
+            indicator = reg[name, vehicle]
+            for idx in loaded:
+                cb.add_le({idx: 1.0, indicator: -1.0}, 0.0)
             lower = dict(loaded)
-            lower[reg[name, vehicle]] = -1.0
+            lower[indicator] = -1.0
             cb.add_ge(lower, 0.0)
 
         if plan.class_r_active:
             for vehicle in veh_id:
-                big = min(plan.nominal_cap[vehicle], plan.demand_r)
-                _presence(vehicle, class_r_full, class_r_prtl, "rc_present", big)
+                _presence(vehicle, class_r_full, class_r_prtl, "rc_present")
+                class_cap = min(plan.nominal_cap[vehicle], plan.cap_r)
                 cap_row = self._occupancy_coeffs(vehicle)
                 cap_row[reg["rc_present", vehicle]] = float(
-                    plan.nominal_cap[vehicle] - plan.cap_r
+                    plan.nominal_cap[vehicle] - class_cap
                 )
                 cb.add_le(cap_row, float(plan.nominal_cap[vehicle]))
             if plan.hard_mode:
@@ -1252,12 +1252,12 @@ class ContainerLoadingOptimizerHiGHS:
         need_t = plan.class_t_cap_active or plan.mix_active
         if need_t:
             for vehicle in veh_id:
-                big_t = min(plan.nominal_cap[vehicle], plan.demand_t)
-                _presence(vehicle, class_t_full, class_t_prtl, "tc_present", big_t)
+                _presence(vehicle, class_t_full, class_t_prtl, "tc_present")
                 if plan.class_t_cap_active:
+                    class_cap = min(plan.nominal_cap[vehicle], plan.cap_t)
                     cap_row = self._occupancy_coeffs(vehicle)
                     cap_row[reg["tc_present", vehicle]] = float(
-                        plan.nominal_cap[vehicle] - plan.cap_t
+                        plan.nominal_cap[vehicle] - class_cap
                     )
                     cb.add_le(cap_row, float(plan.nominal_cap[vehicle]))
 

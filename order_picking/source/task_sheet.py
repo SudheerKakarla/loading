@@ -9,6 +9,7 @@ the file.
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence
 
@@ -41,8 +42,19 @@ def build_task_sheet(
     orders: pd.DataFrame,
     items: pd.DataFrame,
     pickers: pd.DataFrame,
+    travel: Optional[pd.DataFrame] = None,
+    depot_id: Optional[str] = None,
 ) -> pd.DataFrame:
-    """One stop per item line, sequenced by each picker's deadline order."""
+    """One stop per item line, sequenced by each picker's deadline order.
+
+    With a travel table and a depot, each stop's times are the walk from the
+    previous location plus that line's pick time. The walk back to the dock
+    is not a row. Without both, the time cells are blank.
+    """
+    named_depot = "" if depot_id is None else str(depot_id).strip()
+    if (travel is None) != (named_depot == ""):
+        raise ValueError("Pass a travel table and a depot together, or neither.")
+    lookup = None if travel is None else _travel_lookup(travel)
     grouped: Dict[str, List[str]] = {}
     durations: Dict[str, float] = {}
     for row in assignments.itertuples(index=False):
@@ -72,12 +84,22 @@ def build_task_sheet(
             duration = float(durations[order_id])
             finish = float(job["finish_minute"])
             start = finish - duration
-            count = len(lines)
             fields = order_fields.get(order_id, {})
-            for index, line in enumerate(lines):
+            clock = start
+            previous = named_depot
+            for line in lines:
                 sequence += 1
-                line_start = start + duration * index / count
-                line_finish = start + duration * (index + 1) / count
+                if lookup is None:
+                    line_start: object = ""
+                    line_finish: object = ""
+                else:
+                    location = line.get("location_id", "")
+                    clock += _leg(lookup, previous, location)
+                    line_start = clock
+                    clock += _pick_minutes(line)
+                    line_finish = clock
+                    if location:
+                        previous = location
                 sheet.append(
                     {
                         "picker_id": picker_id,
@@ -101,11 +123,10 @@ def build_task_sheet(
 
 
 def write_task_sheet(frame: pd.DataFrame, path: Path) -> None:
-    """Write the sheet with a header line that names the stop order."""
+    """Write the sheet. The first row is the column header."""
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    body = frame.to_csv(index=False)
-    destination.write_text(f"# {TOUR_NOTE}\n{body}", encoding="utf-8")
+    frame.to_csv(destination, index=False)
 
 
 def write_task_html(frame: pd.DataFrame, path: Path) -> None:
@@ -130,7 +151,7 @@ def write_task_html(frame: pd.DataFrame, path: Path) -> None:
         "</head>",
         "<body>",
         "<h1>Picker task sheet</h1>",
-        f"<p>{TOUR_NOTE}</p>",
+        f"<p>{TOUR_NOTE} Stop times are the walk along that order plus each line's pick time. The walk back to the dock is not a row. Without a travel file those cells are blank.</p>",
     ]
     if frame.empty:
         parts.append("<p>No stops.</p>")
@@ -171,6 +192,7 @@ def _items_by_order(items: pd.DataFrame) -> Dict[str, List[dict]]:
                 "item_id": _cell(row, "item_id"),
                 "quantity": _cell(row, "quantity"),
                 "weight": _cell(row, "weight"),
+                "pick_time": row.get("pick_time", ""),
             }
         )
     return grouped
@@ -186,7 +208,38 @@ def _equipment(pickers: pd.DataFrame) -> Dict[str, str]:
 
 
 def _blank_item() -> dict:
-    return {"location_id": "", "item_id": "", "quantity": "", "weight": ""}
+    return {"location_id": "", "item_id": "", "quantity": "", "weight": "", "pick_time": ""}
+
+
+def _travel_lookup(travel: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+    found: Dict[str, Dict[str, float]] = {}
+    for row in travel.itertuples(index=False):
+        origin = str(row.from_location).strip()
+        dest = str(row.to_location).strip()
+        found.setdefault(origin, {})[dest] = float(row.travel_time)
+    return found
+
+
+def _leg(lookup: Mapping[str, Mapping[str, float]], origin: str, dest: str) -> float:
+    if dest == "" or origin == dest:
+        return 0.0
+    try:
+        return float(lookup[origin][dest])
+    except KeyError as exc:
+        raise ValueError(f"Travel time from {origin} to {dest} is missing.") from exc
+
+
+def _pick_minutes(line: Mapping[str, object]) -> float:
+    raw = line.get("pick_time", "")
+    if raw is None or raw == "" or (isinstance(raw, float) and pd.isna(raw)):
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"pick_time must be a number, got {raw!r}.") from exc
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"pick_time must be a finite number >= 0, got {raw!r}.")
+    return value
 
 
 def _cell(row: Mapping[str, object], column: str) -> str:
@@ -217,12 +270,17 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--pickers", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True, help="task_sheet.csv")
     parser.add_argument("--html", type=Path, default=None, help="Optional printable page.")
+    parser.add_argument("--travel", type=Path, default=None, help="from_location, to_location, travel_time.")
+    parser.add_argument("--depot", default=None, help="Dock the walk starts from. Required with --travel.")
     args = parser.parse_args(list(argv) if argv is not None else None)
+    travel = pd.read_csv(args.travel) if args.travel is not None else None
     frame = build_task_sheet(
         pd.read_csv(args.assignments),
         pd.read_csv(args.orders),
         pd.read_csv(args.items),
         pd.read_csv(args.pickers),
+        travel=travel,
+        depot_id=args.depot,
     )
     write_task_sheet(frame, args.out)
     if args.html is not None:

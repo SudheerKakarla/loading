@@ -1,7 +1,10 @@
 """Per-mode caps and times. A blank cell keeps the chunker's global value.
 
-``pallet_basis`` is ``job`` (one pallet per job) or ``line`` (one pallet per
-line). The numbers in an example file are illustrative.
+A filled line, weight, or volume cap is the smaller of that number and the
+global cap. It does not raise the global cap. Pick time and job overhead
+still replace the global value. ``pallet_basis`` is ``job`` (one pallet per
+job) or ``line`` (one pallet per line). The numbers in an example file are
+illustrative.
 """
 
 from __future__ import annotations
@@ -68,8 +71,21 @@ def read_mode_profile(path: Path) -> Dict[str, ModeCaps]:
     return found
 
 
+def _tighter(global_value, mode_value):
+    """The smaller cap. A missing side leaves the side that is set."""
+    if mode_value is None:
+        return global_value
+    if global_value is None:
+        return mode_value
+    return min(global_value, mode_value)
+
+
 def effective_caps(settings, mode: Optional[str]) -> tuple:
-    """Effective line, weight, volume, pick time, and overhead for one mode."""
+    """Effective line, weight, volume, pick time, and overhead for one mode.
+
+    Line, weight, and volume use the tighter of the global cap and the mode
+    cap. Pick time and overhead use the mode value when it is set.
+    """
     lines = getattr(settings, "max_job_lines", None)
     weight = getattr(settings, "max_job_weight", None)
     volume = getattr(settings, "max_job_volume", None)
@@ -78,12 +94,9 @@ def effective_caps(settings, mode: Optional[str]) -> tuple:
     table = getattr(settings, "mode_caps", None) or {}
     caps = table.get(mode) if mode else None
     if caps is not None:
-        if caps.max_job_lines is not None:
-            lines = caps.max_job_lines
-        if caps.max_job_weight is not None:
-            weight = caps.max_job_weight
-        if caps.max_job_volume is not None:
-            volume = caps.max_job_volume
+        lines = _tighter(lines, caps.max_job_lines)
+        weight = _tighter(weight, caps.max_job_weight)
+        volume = _tighter(volume, caps.max_job_volume)
         if caps.default_pick_time is not None:
             pick = caps.default_pick_time
         if caps.job_overhead is not None:

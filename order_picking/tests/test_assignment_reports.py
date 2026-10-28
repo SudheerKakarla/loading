@@ -772,6 +772,7 @@ def test_run_docks_checks_the_shift_from_the_crew_file(tmp_path, monkeypatch, ca
     fit = pd.read_csv(tmp_path / "fit" / "PACK_B" / "utilisation.csv")
     assert fit.iloc[0]["available_minutes"] == pytest.approx(400.0)
     assert fit.iloc[0]["busy_minutes"] == pytest.approx(150.0)
+    assert not (tmp_path / "fit" / "PACK_A" / "staging.csv").exists()
 
 
 def test_staging_capacity_reports_the_first_minute_over_the_peak():
@@ -782,6 +783,7 @@ def test_staging_capacity_reports_the_first_minute_over_the_peak():
     ]
     plain = staging_peaks(waiting, staging_buffer=30.0)
     assert plain["peak"] == 2
+    assert isinstance(plain["peak"], int)
     assert plain["over_capacity"] is False
     assert plain["first_over_minute"] is None
     over = staging_peaks(waiting, staging_buffer=30.0, capacity=1)
@@ -793,8 +795,99 @@ def test_staging_capacity_reports_the_first_minute_over_the_peak():
         capacity=3,
         pallet_counts={"A": 2, "B": 2},
     )
-    assert counted["peak"] == pytest.approx(4)
+    assert counted["peak"] == 4
+    assert isinstance(counted["peak"], int)
     assert counted["first_over_minute"] == pytest.approx(15.0)
+    fraction = staging_peaks(
+        waiting,
+        staging_buffer=30.0,
+        pallet_counts={"A": 1.5, "B": 1.0},
+    )
+    assert fraction["peak"] == pytest.approx(2.5)
+    assert isinstance(fraction["peak"], float)
+
+
+def test_staging_buffer_changes_which_jobs_are_still_at_the_dock(tmp_path, monkeypatch):
+    """A job that finishes after the deadline is gone when the buffer is zero."""
+    import run_docks
+
+    by_depot = tmp_path / "by_depot"
+    _write_depot(by_depot / "PACK_A")
+    pickers = pd.DataFrame(
+        [
+            {
+                "picker_id": "P1",
+                "equipment_type": "pallet_jack",
+                "max_weight": 50.0,
+                "shift_duration": 400.0,
+            }
+        ]
+    )
+
+    def fake_solve(orders, items, crew, matrix, depot_id, **kwargs):
+        result = _quiet_solve(orders, items, crew, matrix, depot_id)
+        result["schedule"] = [
+            {"order_id": "J1", "finish_minute": 12.0, "deadline_minute": 10.0, "minutes_late": 2.0},
+        ]
+        result["picker_workload"] = {"P1": 12.0}
+        return result
+
+    monkeypatch.setattr(run_docks, "solve_order_picking", fake_solve)
+    travel = pd.DataFrame(columns=["from_location", "to_location", "travel_time"])
+    run_docks.solve_docks(
+        by_depot, pickers, travel, tmp_path / "soon", staging_capacity=5, staging_buffer=0
+    )
+    soon = pd.read_csv(tmp_path / "soon" / "PACK_A" / "staging.csv")
+    assert soon.peak.iloc[0] == 0
+    run_docks.solve_docks(
+        by_depot, pickers, travel, tmp_path / "held", staging_capacity=5, staging_buffer=30
+    )
+    held = pd.read_csv(tmp_path / "held" / "PACK_A" / "staging.csv")
+    assert held.peak.iloc[0] == 1
+
+
+def test_lead_times_replace_the_dock_staging_buffer(tmp_path, monkeypatch):
+    import run_docks
+
+    seen = {}
+
+    def fake_solve(*args, **kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(run_docks, "solve_docks", fake_solve)
+    by_depot = tmp_path / "by_depot"
+    _write_depot(by_depot / "PACK_A")
+    pickers = tmp_path / "pickers.csv"
+    pd.DataFrame(
+        [{"picker_id": "P1", "equipment_type": "pallet_jack", "max_weight": 50.0, "shift_duration": 400.0}]
+    ).to_csv(pickers, index=False)
+    travel = tmp_path / "travel.csv"
+    pd.DataFrame(columns=["from_location", "to_location", "travel_time"]).to_csv(travel, index=False)
+    lead = tmp_path / "lead_times.csv"
+    lead.write_text(
+        "step,order,fixed_minutes,minutes_per_pallet,resource_count\n"
+        "checker,1,3,2,1\n"
+        "wrapping,2,1,3,\n",
+        encoding="utf-8",
+    )
+    run_docks.main(
+        [
+            "--by-depot",
+            str(by_depot),
+            "--pickers",
+            str(pickers),
+            "--travel",
+            str(travel),
+            "--out",
+            str(tmp_path / "out"),
+            "--lead-times",
+            str(lead),
+            "--staging-buffer",
+            "30",
+        ]
+    )
+    assert seen["staging_buffer"] == pytest.approx(9.0)
 
 
 def test_non_pick_minutes_shrink_the_shift_and_a_blank_does_not():

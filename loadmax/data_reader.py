@@ -200,6 +200,7 @@ def _normalize_im_input(params):
     for k, v in (params.get("container_priority") or {}).items():
         cp[_maybe_int(k)] = v
     params["container_priority"] = cp
+    params["_container_priority_supplied"] = {_canon_id(key) for key in cp}
     for c in params.get("containerList") or []:
         params["container_priority"].setdefault(c, 0.5 if c == 0 else 1.0)
 
@@ -436,6 +437,50 @@ def _priority_of(params: dict, container_id: Any) -> float:
     return 1.0
 
 
+def _penalty_scale(params: dict, containers: list) -> float:
+    """Smallest explicit truck priority. An unset container 0 is not a truck.
+
+    The loading objective still gives that container priority 0.5. Leaving it
+    in this minimum would shrink the class penalty. An explicit priority,
+    including an explicit 0.5, is kept.
+    """
+    supplied = params.get("_container_priority_supplied")
+    known = None
+    if isinstance(supplied, (set, frozenset, list, tuple)):
+        known = {_canon_id(item) for item in supplied}
+    values: list[float] = []
+    for container_id in containers:
+        if (
+            known is not None
+            and _canon_id(container_id) not in known
+            and _canon_id(container_id) == 0
+        ):
+            continue
+        values.append(_priority_of(params, container_id))
+    return min(values, default=1.0)
+
+
+def _min_partial_fraction(params: dict) -> float:
+    """Smallest partial reward fraction. Missing partials count as a full pallet."""
+    pallets = list(params.get("partialPalletList") or [])
+    if not pallets:
+        return 1.0
+    fractions = params.get("partialFractionValueForPartialPallet") or {}
+    values: list[float] = []
+    for pallet in pallets:
+        raw = fractions.get(pallet, 1.0)
+        if raw is None:
+            raw = fractions.get(str(pallet), 1.0)
+        try:
+            fraction = float(raw)
+        except (TypeError, ValueError):
+            fraction = 1.0
+        if not math.isfinite(fraction) or fraction <= 0:
+            fraction = 1.0
+        values.append(fraction)
+    return min(values) if values else 1.0
+
+
 @dataclass
 class CapacityPlan:
     """Resolved per-truck caps and class rules. Inactive fields leave the model unchanged."""
@@ -483,9 +528,28 @@ class CapacityPlan:
 
     @property
     def truck_limit(self) -> int:
-        if not self.cap_r:
+        """Fewest trucks that can hold the Class R demand.
+
+        Each truck contributes ``min(nominal cap, cap_r)``. The largest
+        trucks are counted first. When every truck can hold ``cap_r`` and
+        the fleet is large enough, this is ``ceil(demand_r / cap_r)``.
+        """
+        if not self.cap_r or self.demand_r <= 0:
             return 0
-        return math.ceil(self.demand_r / self.cap_r)
+        caps = sorted(
+            (min(int(cap), int(self.cap_r)) for cap in self.nominal_cap.values()),
+            reverse=True,
+        )
+        remaining = self.demand_r
+        used = 0
+        for cap in caps:
+            if remaining <= 0:
+                break
+            if cap <= 0:
+                continue
+            remaining -= cap
+            used += 1
+        return used
 
     def applicable_cap(self, vehicle: Any, has_r: bool, has_t: bool) -> int:
         if vehicle in self.nominal_cap:
@@ -526,9 +590,11 @@ def resolve_capacity_classes(params: dict) -> CapacityPlan:
 
     A blank ``reducedCapMaxPallets`` / ``tempControlledMaxPallets`` leaves that
     rule off. An explicit zero or negative value raises. Omitted weights use
-    0.5 and 0.25, scaled by the smallest container priority. Omitted mode is soft.
-    Nominal pallet cap defaults to ``len(layerList) * len(positionList)``.
-    Calling this twice is safe.
+    0.5 and 0.25, scaled by the smallest explicit container priority and by
+    the smallest partial fraction. An unset container 0 does not shrink that
+    scale. Omitted mode is soft. A truck whose nominal cap is below the class
+    cap keeps its own nominal cap. Nominal pallet cap defaults to
+    ``len(layerList) * len(positionList)``. Calling this twice is safe.
     """
     full = list(params.get("fullPalletList") or [])
     prtl = list(params.get("partialPalletList") or [])
@@ -656,20 +722,18 @@ def resolve_capacity_classes(params: dict) -> CapacityPlan:
 
     if cap_r is not None:
         _need_grid("reducedCapMaxPallets")
-        for cid, n_v in nominal.items():
-            if cap_r > n_v:
-                raise ValueError(
-                    f"reducedCapMaxPallets ({cap_r}) is above nominal pallet cap "
-                    f"{n_v} for container {cid}"
-                )
+        if nominal and all(cap_r > n_v for n_v in nominal.values()):
+            raise ValueError(
+                f"reducedCapMaxPallets ({cap_r}) is above nominal pallet cap "
+                f"{min(nominal.values())} on every container"
+            )
     if cap_t is not None:
         _need_grid("tempControlledMaxPallets")
-        for cid, n_v in nominal.items():
-            if cap_t > n_v:
-                raise ValueError(
-                    f"tempControlledMaxPallets ({cap_t}) is above nominal pallet cap "
-                    f"{n_v} for container {cid}"
-                )
+        if nominal and all(cap_t > n_v for n_v in nominal.values()):
+            raise ValueError(
+                f"tempControlledMaxPallets ({cap_t}) is above nominal pallet cap "
+                f"{min(nominal.values())} on every container"
+            )
 
     global_wt = params.get("max_wt")
     try:
@@ -772,12 +836,14 @@ def resolve_capacity_classes(params: dict) -> CapacityPlan:
     if cap_r is not None or cap_t is not None:
         demand_t = sum(_units(plt) for plt in class_t)
 
-    # Smallest truck priority keeps the penalty below one ordinary pallet on
-    # every truck. A negative priority is treated as zero so the penalty
-    # cannot become a reward for opening more Class R trucks.
-    scale = min((_priority_of(params, cid) for cid in containers), default=1.0)
+    # The penalty stays below the smallest partial on the cheapest explicit
+    # truck. A negative priority is treated as zero so the penalty cannot
+    # become a reward for opening more Class R trucks. With no partials the
+    # fraction is 1, so a full pallet is the bound.
+    scale = _penalty_scale(params, containers)
     if scale < 0:
         scale = 0.0
+    scale *= _min_partial_fraction(params)
     lambda_r = consolidation_weight * scale if cap_r is not None else 0.0
     mu_mix = mix_weight * scale if cap_r is not None else 0.0
 

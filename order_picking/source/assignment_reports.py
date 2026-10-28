@@ -21,6 +21,16 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import pandas as pd
 
 _EPS = 1e-6
+
+
+def _whole_count(value: float):
+    """An integer when the pallet count is whole. A fraction stays a float."""
+    if not math.isfinite(value):
+        return value
+    rounded = round(value)
+    if abs(value - rounded) <= _EPS:
+        return int(rounded)
+    return value
 _GAP_FRACTION = 0.1
 _FEASIBILITY_REL = 1e-6
 _NOISE_MARGIN = 10.0
@@ -434,7 +444,7 @@ def staging_peaks(
             peak = current
             peak_minute = minute
     report = {
-        "peak": peak,
+        "peak": _whole_count(peak),
         "peak_minute": peak_minute,
         "jobs_counted": counted,
         "finished_after_departure": finished_after,
@@ -444,7 +454,7 @@ def staging_peaks(
         "first_over_minute": first_over_minute,
     }
     if pallets_by_job is not None:
-        report["peak_pallets"] = peak
+        report["peak_pallets"] = _whole_count(peak)
     if capacity is not None:
         report["capacity"] = float(capacity)
     return report

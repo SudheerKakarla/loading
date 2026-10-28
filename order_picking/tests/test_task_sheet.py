@@ -42,7 +42,8 @@ def test_two_pickers_follow_deadlines_and_a_late_job_shows_minutes_late():
     assert list(first.job_id) == ["SOON", "SOON", "LATER"]
     assert list(first.sequence) == [1, 2, 3]
     assert list(first.item_id) == ["A", "B", "C"]
-    assert first.planned_finish_minute.iloc[1] == 10.0
+    assert first.planned_start_minute.iloc[0] == ""
+    assert first.planned_finish_minute.iloc[1] == ""
     assert first.minutes_late.iloc[0] > 0
     late = sheet[sheet.job_id == "LATE"].iloc[0]
     assert late.minutes_late == 20.0
@@ -79,8 +80,34 @@ def test_missing_optional_columns_stay_blank_and_the_file_names_the_tour(tmp_pat
         ]
     )
     text = out.read_text(encoding="utf-8")
-    assert text.startswith(f"# {TOUR_NOTE}")
-    assert "chunker's tour order" in (tmp_path / "task_sheet.html").read_text(encoding="utf-8")
+    assert text.startswith("picker_id,")
+    loaded = pd.read_csv(out)
+    assert list(loaded.columns)[0] == "picker_id"
+    page = (tmp_path / "task_sheet.html").read_text(encoding="utf-8")
+    assert TOUR_NOTE in page
+    assert "those cells are blank" in page
+
+
+def test_stop_times_follow_the_walk_not_an_even_split():
+    """Three minutes to L1, then eight to L2. The job duration is not shared equally."""
+    assignments = pd.DataFrame([{"picker_id": "P1", "order_id": "SOON", "duration": 20.0}])
+    orders = pd.DataFrame([{"order_id": "SOON", "cutoff_time": 100.0}])
+    items = pd.DataFrame(
+        [
+            {"order_id": "SOON", "item_id": "A", "location_id": "L1", "pick_time": 1.0},
+            {"order_id": "SOON", "item_id": "B", "location_id": "L2", "pick_time": 2.0},
+        ]
+    )
+    pickers = pd.DataFrame([{"picker_id": "P1", "equipment_type": "pallet_jack"}])
+    travel = pd.DataFrame(
+        [
+            {"from_location": "D", "to_location": "L1", "travel_time": 3.0},
+            {"from_location": "L1", "to_location": "L2", "travel_time": 8.0},
+        ]
+    )
+    sheet = build_task_sheet(assignments, orders, items, pickers, travel=travel, depot_id="D")
+    assert list(sheet.planned_start_minute) == [3.0, 12.0]
+    assert list(sheet.planned_finish_minute) == [4.0, 14.0]
 
 
 def _csv(path: Path, frame: pd.DataFrame) -> Path:
