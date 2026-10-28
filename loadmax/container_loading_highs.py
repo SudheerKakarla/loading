@@ -526,6 +526,7 @@ class ContainerLoadingOptimizerHiGHS:
         def _make(c, l, p, plt, is_partial: bool) -> LoadObj:
             obj = LoadObj()
             obj.marketID = ip.get("marketID", "")
+            obj.palletID = plt
             obj.container = c
             obj.layer = l
             obj.position = p

@@ -312,7 +312,8 @@ def improve_tour_simultaneous(P, init):
         loop += 1
         best, arg = best_pair()
     return {"nxt": nxt, "prv": prv, "distance": P.tour_distance(nxt),
-            "swaps": swaps, "time": time.perf_counter() - t0}
+            "swaps": swaps, "time": time.perf_counter() - t0,
+            "open_swap": best > 0}
 
 
 # ----------------------------------------------------------------------------

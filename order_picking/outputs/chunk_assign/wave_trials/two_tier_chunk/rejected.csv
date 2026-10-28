@@ -1,0 +1,7 @@
+truck_id,depot_id,record_type,record_id,item_id,reason,weight,volume
+TRK04,PACK_B,order,O0072,,exceeds_max_volume,3117.75,4.4255
+TRK07,PACK_A,order,O0120,,exceeds_max_volume,2587.22,5.2109
+TRK10,PACK_B,order,O0179,,exceeds_max_volume,2765.32,5.0259
+TRK11,PACK_A,order,O0184,,exceeds_max_volume,2765.77,4.5954
+TRK13,PACK_A,order,O0230,,exceeds_max_volume,2711.61,4.1138
+TRK15,PACK_A,order,O0263,,exceeds_max_volume,2605.68,4.1199

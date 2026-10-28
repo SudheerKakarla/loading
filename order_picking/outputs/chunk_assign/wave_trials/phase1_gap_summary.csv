@@ -1,0 +1,2 @@
+count,mean,p95,worst,worst_order_id,worst_depot_id,worst_heuristic_walk,worst_held_karp_walk,open_swaps,heuristic_shorter_than_held_karp,max_abs_stored_minus_held_karp
+171,0.1381916329284756,0.5538461538461572,0.861538461538462,TRK07-J11,PACK_A,7.261538461538461,6.399999999999999,161,0,8.881784197001252e-16

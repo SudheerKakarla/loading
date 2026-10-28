@@ -190,11 +190,57 @@ def deadline_minutes(value: Any) -> Optional[float]:
     return number
 
 
-def edd_sequence(order_ids: Sequence[str], deadlines: Mapping[str, float]) -> List[str]:
-    """Earliest deadline first. Undated jobs go last. Ties break on order id."""
+def stop_depth(destination_id: Any) -> float:
+    """Numeric depth of a destination such as ``STOP-4``. A blank value is 0."""
+    if destination_id is None:
+        return 0.0
+    text = str(destination_id).strip()
+    if not text or text.lower() == "nan":
+        return 0.0
+    tail = text.rsplit("-", 1)[-1].strip()
+    try:
+        value = float(tail)
+    except ValueError:
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return value
+
+
+def _load_stop(load_stops: Optional[Mapping[str, float]], order_id: str) -> float:
+    if not load_stops or order_id not in load_stops:
+        return 0.0
+    try:
+        value = float(load_stops[order_id])
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return value
+
+
+def edd_sequence(
+    order_ids: Sequence[str],
+    deadlines: Mapping[str, float],
+    load_stops: Optional[Mapping[str, float]] = None,
+) -> List[str]:
+    """Earliest deadline first. Undated jobs go last. Ties break on order id.
+
+    When ``load_stops`` is set, dated jobs that share a deadline go deepest
+    stop first. A missing stop sorts as 0, after every positive stop on that
+    deadline. Undated jobs stay last and still tie on order id. The default
+    ``None`` keeps the order-id tie break.
+    """
+
+    def dated_key(order_id: str):
+        deadline = float(deadlines[order_id])
+        if load_stops:
+            return (deadline, -_load_stop(load_stops, order_id), order_id)
+        return (deadline, order_id)
+
     dated = sorted(
         (order_id for order_id in order_ids if order_id in deadlines),
-        key=lambda order_id: (deadlines[order_id], order_id),
+        key=dated_key,
     )
     undated = sorted(order_id for order_id in order_ids if order_id not in deadlines)
     return dated + undated
@@ -204,17 +250,18 @@ def schedule_lateness(
     picker_assignments: Mapping[str, Sequence[str]],
     durations: Mapping[str, float],
     deadlines: Mapping[str, float],
+    load_stops: Optional[Mapping[str, float]] = None,
 ) -> List[dict]:
     """Finish time of each assigned job when the picker works in deadline order.
 
     The clock starts at 0. A job's finish minute is the sum of its own
     duration and the durations of that picker's earlier jobs. Lateness is
     how far the finish is past the deadline, and never negative. An undated
-    job is not late.
+    job is not late. ``load_stops`` is the optional deepest-stop tie break.
     """
     rows: List[dict] = []
     for picker_id, order_ids in picker_assignments.items():
-        sequence = edd_sequence(list(order_ids), deadlines)
+        sequence = edd_sequence(list(order_ids), deadlines, load_stops)
         finish = 0.0
         for position, order_id in enumerate(sequence, start=1):
             finish += float(durations[order_id])
@@ -231,6 +278,133 @@ def schedule_lateness(
                 }
             )
     return rows
+
+
+def walk_gap_summary(gaps: Sequence[float]) -> dict:
+    """Mean, 95th percentile, and worst of heuristic walk minus Held-Karp walk.
+
+    The 95th percentile is the nearest rank ``ceil(0.95 * n)`` of the sorted
+    gaps, one-based. The worst gap is the largest excess.
+    """
+    values = [float(gap) for gap in gaps]
+    if not values:
+        raise ValueError("walk_gap_summary needs at least one job.")
+    ordered = sorted(values)
+    rank = math.ceil(0.95 * len(ordered))
+    return {
+        "count": len(ordered),
+        "mean": sum(ordered) / len(ordered),
+        "p95": ordered[rank - 1],
+        "worst": ordered[-1],
+    }
+
+
+def load_inversions(
+    schedule: Sequence[Mapping[str, Any]],
+    trucks: Mapping[str, str],
+    stops: Mapping[str, float],
+) -> dict:
+    """Pairs on one truck where a deeper stop finishes after a nearer stop.
+
+    Finish times are the planned minutes from ``schedule``. Jobs on different
+    trucks are not compared. Equal stops are not an inversion. A job with no
+    truck id is left out of the count.
+    """
+    by_truck: Dict[str, List[Mapping[str, Any]]] = {}
+    unmatched = 0
+    for row in schedule:
+        order_id = str(row["order_id"])
+        truck_id = trucks.get(order_id)
+        if not truck_id:
+            unmatched += 1
+            continue
+        by_truck.setdefault(str(truck_id), []).append(row)
+    pairs: List[dict] = []
+    for truck_id, rows in by_truck.items():
+        for left in rows:
+            for right in rows:
+                deeper = str(left["order_id"])
+                nearer = str(right["order_id"])
+                if deeper == nearer:
+                    continue
+                deeper_stop = float(stops.get(deeper, 0.0))
+                nearer_stop = float(stops.get(nearer, 0.0))
+                if deeper_stop <= nearer_stop + _EPS:
+                    continue
+                deeper_finish = float(left["finish_minute"])
+                nearer_finish = float(right["finish_minute"])
+                if deeper_finish <= nearer_finish + _EPS:
+                    continue
+                pairs.append(
+                    {
+                        "truck_id": truck_id,
+                        "deeper_order_id": deeper,
+                        "nearer_order_id": nearer,
+                        "deeper_stop": deeper_stop,
+                        "nearer_stop": nearer_stop,
+                        "deeper_finish": deeper_finish,
+                        "nearer_finish": nearer_finish,
+                    }
+                )
+    return {"count": len(pairs), "unmatched": unmatched, "pairs": pairs}
+
+
+_STAGING_ASSUMPTIONS = (
+    "One job is counted as one pallet. A forklift-only job can weigh more than "
+    "2500 kg or occupy more than 2.0 m3. Loading starts at departure, which is "
+    "the job cutoff plus the staging buffer (30 minutes unless changed). A job "
+    "waits on the half-open interval from its finish until departure. A job that "
+    "finishes at or after departure is not in the count. This report is not a "
+    "dock capacity."
+)
+
+
+def staging_peaks(
+    schedule: Sequence[Mapping[str, Any]],
+    staging_buffer: float = 30.0,
+) -> dict:
+    """Peak count of jobs finished and not yet loaded.
+
+    Departure is ``deadline_minute + staging_buffer``. Departures are applied
+    before arrivals at the same minute, matching the half-open wait. Undated
+    jobs are omitted. The peak is not compared with a staging capacity.
+    """
+    if staging_buffer < 0 or not math.isfinite(staging_buffer):
+        raise ValueError("staging_buffer must be a finite number >= 0.")
+    events: List[Tuple[float, int]] = []
+    finished_after = 0
+    undated = 0
+    counted = 0
+    for row in schedule:
+        deadline = row.get("deadline_minute")
+        if deadline is None or deadline == "":
+            undated += 1
+            continue
+        finish = float(row["finish_minute"])
+        departure = float(deadline) + float(staging_buffer)
+        if finish >= departure - _EPS:
+            finished_after += 1
+            continue
+        counted += 1
+        events.append((finish, 1))
+        events.append((departure, -1))
+    events.sort(key=lambda item: (item[0], item[1]))
+    current = 0
+    peak = 0
+    peak_minute: Optional[float] = None
+    for minute, delta in events:
+        current += delta
+        if current > peak:
+            peak = current
+            peak_minute = minute
+    return {
+        "peak": peak,
+        "peak_minute": peak_minute,
+        "jobs_counted": counted,
+        "finished_after_departure": finished_after,
+        "undated": undated,
+        "assumptions": _STAGING_ASSUMPTIONS,
+    }
 
 
 def late_jobs(schedule: Sequence[Mapping[str, Any]]) -> List[dict]:

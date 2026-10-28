@@ -10,7 +10,6 @@ stacking, and left/right + front/back balance still apply.
 
 from pathlib import Path
 import sys
-import os
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -19,6 +18,12 @@ if str(ROOT) not in sys.path:
 import pandas as pd
 
 from loadmax.data_reader import read_im_input_csv, bind_sku_priority_to_pallets
+from loadmax.result_paths import (
+    metadata_payload,
+    resolve_run_dir,
+    results_root as results_root_of,
+    write_source_metadata,
+)
 
 
 def _apply_ab_priority_materials(params):
@@ -74,13 +79,17 @@ def main(
     vdr_stacking_rules=False,
 ):
     csv_path = Path(csv_path or ROOT / "data" / "im_input_1.csv")
+    results_root = results_root_of(ROOT)
+    out_dir = resolve_run_dir(results_root, "highs", csv_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
     print("HiGHS TRUCK LOADING")
     print("=" * 80)
-    print(f"  Input : {csv_path}")
-    print(f"  Mode  : {'ocean' if run_ocean else 'truck'}")
-    print(f"  Time  : {time_limit}s   gap={gap}")
+    print(f"  Input   : {csv_path}")
+    print(f"  Results : {out_dir}")
+    print(f"  Mode    : {'ocean' if run_ocean else 'truck'}")
+    print(f"  Time    : {time_limit}s   gap={gap}")
     print("=" * 80)
 
     inputParams = read_im_input_csv(csv_path)
@@ -117,8 +126,6 @@ def main(
     for c, n in sorted(by_container.items(), key=lambda kv: str(kv[0])):
         print(f"    Container {c}: {n} pallets")
 
-    out_dir = ROOT / "optimization_results"
-    os.makedirs(out_dir, exist_ok=True)
     rows = []
     for instr in instructions:
         rows.append({
@@ -126,6 +133,7 @@ def main(
             "Sequence": instr.sequence,
             "Position": instr.position,
             "Layer": instr.layer,
+            "PalletID": getattr(instr, "palletID", ""),
             "Material": instr.material,
             "Batch": instr.batch,
             "Cases": instr.cases,
@@ -136,20 +144,35 @@ def main(
             "Warehouse_Location": instr.location,
             "Destination": instr.shipTo,
         })
-    out_file = out_dir / f"loading_instructions_highs_{csv_path.stem}.csv"
+    out_file = out_dir / "loading_instructions.csv"
     pd.DataFrame(rows).to_csv(out_file, index=False)
     print(f"\nWrote {out_file}")
 
     summary_rows = build_container_results_summary(inputParams, instructions)
     print_container_results_summary(summary_rows)
-    summary_file = out_dir / f"results_summary_highs_{csv_path.stem}.csv"
+    summary_file = out_dir / "results_summary.csv"
     try:
         write_container_results_summary(summary_rows, summary_file)
         print(f"Wrote {summary_file}")
     except PermissionError:
-        alt = out_dir / f"results_summary_highs_{csv_path.stem}_run.csv"
+        alt = out_dir / "results_summary_run.csv"
         write_container_results_summary(summary_rows, alt)
         print(f"Locked {summary_file}; wrote {alt}")
+    write_source_metadata(
+        out_dir,
+        metadata_payload(
+            solver="highs",
+            csv_path=csv_path,
+            extra={
+                "scenario": out_dir.name,
+                "marketID": inputParams.get("marketID"),
+                "status": solve_result.get("message"),
+                "objective": solve_result.get("objective_value"),
+                "n_instructions": len(instructions),
+                "static_driver": str(Path(__file__).resolve()),
+            },
+        ),
+    )
     return solve_result, instructions, summary_rows
 
 

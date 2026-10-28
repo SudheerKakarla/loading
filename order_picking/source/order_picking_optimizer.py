@@ -222,15 +222,19 @@ def route_order(
             "order_id": order_id,
             "route": [depot_id, loc, depot_id],
             "route_duration": travel + pick_time,
+            "open_swap": False,
         }
 
     nodes = [depot_id] + stops
     problem = _SubProblem(nodes, lookup, order_id)
     depot_index = 0
 
+    open_swap = False
     if solver == "heuristic":
         init = find_initial_tour(problem)
-        best = improve_tour_simultaneous(problem, init)
+        improved = improve_tour_simultaneous(problem, init)
+        open_swap = bool(improved.get("open_swap"))
+        best = improved
         # 2-opt must not hand phase 2 a directed walk longer than nearest neighbor.
         if (not is_single_tour(best["nxt"])) or best["distance"] > init["distance"] + 1e-9:
             best = init
@@ -250,7 +254,12 @@ def route_order(
 
     order = tour_order(nxt, start=depot_index)
     route = [problem.names[i] for i in order] + [problem.names[depot_index]]
-    return {"order_id": order_id, "route": route, "route_duration": duration + pick_time}
+    return {
+        "order_id": order_id,
+        "route": route,
+        "route_duration": duration + pick_time,
+        "open_swap": open_swap,
+    }
 
 
 def route_orders(
@@ -676,6 +685,7 @@ def _solve_assignment_gurobi(
     abs_gap: Optional[float] = None,
     accept_incumbent: bool = False,
     objective_upper: Optional[float] = None,
+    load_stops: Optional[Dict[str, float]] = None,
 ) -> dict:
     """Same model as ``solve_assignment_highs``, solved with Gurobi.
 
@@ -752,7 +762,11 @@ def _solve_assignment_gurobi(
     if dated:
         from assignment_reports import edd_sequence
 
-        sequence = [oid for oid in edd_sequence(list(weight), deadlines or {}) if oid in set(dated)]
+        sequence = [
+            oid
+            for oid in edd_sequence(list(weight), deadlines or {}, load_stops)
+            if oid in set(dated)
+        ]
         big_m = max((float(picker_shift[pid]) for pid in picker_ids), default=0.0)
         if big_m <= 0.0:
             big_m = 1.0
@@ -1258,6 +1272,7 @@ def solve_order_assignment(
     require_must_ship: bool = False,
     staged_assignment: bool = False,
     withhold_if_late_at_start: bool = False,
+    load_stops: Optional[Dict[str, float]] = None,
 ) -> dict:
     """Phase 2: assign routed orders to pickers (C1-C5, C8).
 
@@ -1311,6 +1326,13 @@ def solve_order_assignment(
         ``A_r(T)`` for every eligible picker is left out before the solve,
         with reason ``cannot_meet_cutoff``. Off by default. Jobs removed
         here are not forced on by ``require_must_ship``.
+    load_stops : optional map of order id to stop depth. Dated jobs that
+        share a deadline are then sequenced deepest stop first. The default
+        ``None`` keeps the order-id tie break. On a lateness weight of 0
+        the sequence does not enter the objective. The reported finish
+        times still use it. Jobs of one truck share a cutoff, so this
+        reorder stays inside an earliest-deadline block. The sum of late
+        minutes can still change.
 
     Returns
     -------
@@ -1402,6 +1424,7 @@ def solve_order_assignment(
         jack_penalty=prefer_jack,
         penalized_pairs=penalized_pairs,
         forced_orders=forced_orders,
+        load_stops=load_stops,
     )
     if staged_assignment:
         solved = _solve_staged(
@@ -1429,7 +1452,9 @@ def solve_order_assignment(
     _attach_solver_log(result, solved, mip_gap)
     from assignment_reports import drop_detail, late_jobs, schedule_lateness
 
-    schedule = schedule_lateness(result["picker_assignments"], full_duration, full_deadlines)
+    schedule = schedule_lateness(
+        result["picker_assignments"], full_duration, full_deadlines, load_stops
+    )
     result["schedule"] = schedule
     result["late_jobs"] = late_jobs(schedule)
     result["late_minutes"] = sum(float(row["minutes_late"]) for row in result["late_jobs"])

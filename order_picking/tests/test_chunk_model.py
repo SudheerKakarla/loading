@@ -325,3 +325,114 @@ def test_cli_writes_jobs_and_rejected_rows(tmp_path: Path):
     assert solve.mip_gap.iloc[0] == pytest.approx(0.0)
     assert bool(solve.fallback.iloc[0]) is False
     assert len(pd.read_csv(out / "orders.csv")) == 1
+
+
+def _two_heavy_orders() -> pd.DataFrame:
+    """Each order fits a jack. Together they fit only a forklift."""
+    return pd.DataFrame(
+        [
+            _line("A", "A", 2000.0, volume=0.5, source_order_id="O1"),
+            _line("B", "B", 2000.0, volume=0.5, source_order_id="O2"),
+        ]
+    )
+
+
+def test_jack_tier_keeps_two_light_orders_apart():
+    """The default merges them. The flag refuses a merge that no line forces onto a forklift."""
+    travel = _axis({"DEPOT": 0.0, "A": 1.0, "B": 2.0})
+    loads = _two_heavy_orders()
+    settings = _settings(job_overhead=5.0)
+    merged = chunk_loads_model(loads, travel, _crew(), settings)
+    assert len(merged.orders) == 1
+    assert merged.objective == pytest.approx(9.0)
+    apart = chunk_loads_model(loads, travel, _crew(), _settings(job_overhead=5.0, jack_tier_merges=True))
+    assert len(apart.orders) == 2
+    assert apart.objective == pytest.approx(16.0)
+    assert set(apart.items.item_id) == {"A", "B"}
+
+
+def test_jack_tier_still_merges_a_line_the_jack_cannot_carry():
+    loads = pd.DataFrame(
+        [
+            _line("A", "A", 3000.0, volume=0.4, source_order_id="O1"),
+            _line("B", "B", 400.0, volume=0.4, source_order_id="O2"),
+        ]
+    )
+    travel = _axis({"DEPOT": 0.0, "A": 1.0, "B": 2.0})
+    result = chunk_loads_model(
+        loads, travel, _crew(), _settings(job_overhead=5.0, jack_tier_merges=True)
+    )
+    assert len(result.orders) == 1
+    assert result.orders.required_equipment.iloc[0] == "forklift"
+    assert result.objective == pytest.approx(9.0)
+
+
+def test_jack_tier_splits_on_volume_when_no_line_needs_a_forklift():
+    loads = pd.DataFrame(
+        [
+            _line("A", "A", 100.0, volume=1.2, source_order_id="O1"),
+            _line("B", "B", 100.0, volume=1.2, source_order_id="O2"),
+        ]
+    )
+    travel = _axis({"DEPOT": 0.0, "A": 1.0, "B": 2.0})
+    result = chunk_loads_model(
+        loads, travel, _crew(), _settings(job_overhead=5.0, jack_tier_merges=True)
+    )
+    assert len(result.orders) == 2
+    assert result.objective == pytest.approx(16.0)
+
+
+def test_jack_tier_leaves_one_source_order_whole():
+    """Two lines of one order exceed the jack and fit the forklift. The flag does not split them."""
+    loads = pd.DataFrame(
+        [
+            _line("A", "A", 2000.0, volume=0.4, source_order_id="O1"),
+            _line("B", "B", 2000.0, volume=0.4, source_order_id="O1"),
+        ]
+    )
+    travel = pd.DataFrame(
+        [
+            {"from_location": "DEPOT", "to_location": "A", "travel_time": 1.0},
+            {"from_location": "A", "to_location": "DEPOT", "travel_time": 1.0},
+            {"from_location": "DEPOT", "to_location": "B", "travel_time": 1.0},
+            {"from_location": "B", "to_location": "DEPOT", "travel_time": 1.0},
+            {"from_location": "A", "to_location": "B", "travel_time": 100.0},
+            {"from_location": "B", "to_location": "A", "travel_time": 100.0},
+        ]
+    )
+    result = chunk_loads_model(
+        loads, travel, _crew(), _settings(jack_tier_merges=True)
+    )
+    assert len(result.orders) == 1
+    assert result.objective == pytest.approx(102.0)
+
+
+def test_jack_tier_savings_fallback_does_not_keep_the_merge(monkeypatch):
+    monkeypatch.setattr("chunk_model.solve_cover", lambda *args, **kwargs: None)
+    result = chunk_loads_model(
+        _two_heavy_orders(),
+        _axis({"DEPOT": 0.0, "A": 1.0, "B": 2.0}),
+        _crew(),
+        _settings(job_overhead=5.0, jack_tier_merges=True),
+    )
+    assert result.solves[0].fallback is True
+    assert len(result.orders) == 2
+    assert set(result.items.item_id) == {"A", "B"}
+    assert result.objective == pytest.approx(16.0)
+
+
+def test_jack_tier_on_one_stop_keeps_the_orders_apart():
+    loads = pd.DataFrame(
+        [
+            _line("A", "A", 2000.0, volume=0.5, source_order_id="O1", destination_id="STOP-1"),
+            _line("B", "B", 2000.0, volume=0.5, source_order_id="O2", destination_id="STOP-1"),
+        ]
+    )
+    result = chunk_loads_model(
+        loads,
+        _axis({"DEPOT": 0.0, "A": 1.0, "B": 2.0}),
+        _crew(),
+        _settings(job_overhead=5.0, jack_tier_merges=True, same_stop=True),
+    )
+    assert len(result.orders) == 2
+    assert result.objective == pytest.approx(16.0)

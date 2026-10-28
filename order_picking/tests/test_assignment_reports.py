@@ -10,14 +10,18 @@ from assignment_reports import (
     deadline_minutes,
     drop_detail,
     edd_sequence,
+    load_inversions,
     parse_scenarios,
     reachable_absolute_gap,
     remove_pickers,
     require_shared_crew,
     schedule_lateness,
     shift_deadlines,
+    staging_peaks,
+    stop_depth,
     stop_reason,
     utilisation_rows,
+    walk_gap_summary,
 )
 from assignment_reports import main as crew_main
 from order_picking_optimizer import format_picking_solution, solve_order_assignment
@@ -25,6 +29,81 @@ from order_picking_optimizer import format_picking_solution, solve_order_assignm
 
 def test_edd_puts_undated_jobs_last_and_breaks_ties_by_id():
     assert edd_sequence(["B", "A", "C"], {"B": 5.0, "A": 5.0}) == ["A", "B", "C"]
+
+
+def test_load_stops_break_a_shared_deadline_by_deepest_stop():
+    stops = {"A": 1.0, "B": 4.0, "C": 9.0}
+    assert edd_sequence(["A", "B", "C"], {"A": 5.0, "B": 5.0}, stops) == ["B", "A", "C"]
+    assert edd_sequence(["A", "B"], {"A": 1.0, "B": 5.0}, {"A": 0.0, "B": 9.0}) == ["A", "B"]
+    assert edd_sequence(["B", "A"], {"A": 5.0, "B": 5.0}, {"A": 2.0}) == ["A", "B"]
+    assert stop_depth("STOP-4") == pytest.approx(4.0)
+    assert stop_depth("") == pytest.approx(0.0)
+    assert stop_depth(None) == pytest.approx(0.0)
+
+
+def test_schedule_uses_the_deepest_stop_inside_one_deadline():
+    schedule = schedule_lateness(
+        {"P1": ["A", "B"]},
+        {"A": 8.0, "B": 3.0},
+        {"A": 5.0, "B": 5.0},
+        {"A": 1.0, "B": 4.0},
+    )
+    by_id = {row["order_id"]: row for row in schedule}
+    assert by_id["B"]["position"] == 1
+    assert by_id["B"]["minutes_late"] == pytest.approx(0.0)
+    assert by_id["A"]["finish_minute"] == pytest.approx(11.0)
+    assert by_id["A"]["minutes_late"] == pytest.approx(6.0)
+
+
+def test_load_inversions_count_a_deeper_stop_that_finishes_later():
+    schedule = [
+        {"order_id": "DEEP", "finish_minute": 20.0},
+        {"order_id": "NEAR", "finish_minute": 10.0},
+        {"order_id": "OTHER", "finish_minute": 5.0},
+    ]
+    trucks = {"DEEP": "T1", "NEAR": "T1", "OTHER": "T2"}
+    stops = {"DEEP": 4.0, "NEAR": 1.0, "OTHER": 3.0}
+    found = load_inversions(schedule, trucks, stops)
+    assert found["count"] == 1
+    assert found["pairs"][0]["deeper_order_id"] == "DEEP"
+    cleared = [
+        {"order_id": "DEEP", "finish_minute": 10.0},
+        {"order_id": "NEAR", "finish_minute": 20.0},
+    ]
+    assert load_inversions(cleared, {"DEEP": "T1", "NEAR": "T1"}, stops)["count"] == 0
+
+
+def test_staging_peak_counts_jobs_waiting_until_departure():
+    waiting = [
+        {"order_id": "A", "finish_minute": 10.0, "deadline_minute": 20.0},
+        {"order_id": "B", "finish_minute": 15.0, "deadline_minute": 20.0},
+    ]
+    peak = staging_peaks(waiting, staging_buffer=30.0)
+    assert peak["peak"] == 2
+    assert peak["finished_after_departure"] == 0
+    assert "2500 kg" in peak["assumptions"]
+    handoff = [
+        {"order_id": "A", "finish_minute": 0.0, "deadline_minute": 10.0},
+        {"order_id": "B", "finish_minute": 30.0, "deadline_minute": 20.0},
+    ]
+    # Buffer 20. A waits on [0, 30) and B on [30, 40). The departure is applied first, so the peak is 1.
+    assert staging_peaks(handoff, staging_buffer=20.0)["peak"] == 1
+    late = [{"order_id": "A", "finish_minute": 40.0, "deadline_minute": 0.0}]
+    missed = staging_peaks(late, staging_buffer=30.0)
+    assert missed["peak"] == 0
+    assert missed["finished_after_departure"] == 1
+    with pytest.raises(ValueError, match="staging_buffer"):
+        staging_peaks(waiting, staging_buffer=-1.0)
+
+
+def test_walk_gap_summary_reports_mean_p95_and_worst():
+    summary = walk_gap_summary([0.0, 1.0, 2.0, 3.0, 4.0])
+    assert summary["count"] == 5
+    assert summary["mean"] == pytest.approx(2.0)
+    assert summary["p95"] == pytest.approx(4.0)
+    assert summary["worst"] == pytest.approx(4.0)
+    with pytest.raises(ValueError, match="at least one"):
+        walk_gap_summary([])
 
 
 def test_schedule_charges_lateness_only_after_the_deadline():
@@ -578,6 +657,52 @@ def test_staged_keeps_both_jobs_when_lateness_costs_more_than_weight():
                 assert row["mip_rel_gap_used"] == pytest.approx(
                     row["mip_abs_gap_used"] / row["objective_upper_used"]
                 )
+
+
+def test_load_stops_change_the_sum_of_late_minutes_inside_one_deadline():
+    """Same cutoff. Shortest job first leaves 6 late minutes. Longest first leaves 9."""
+    orders = pd.DataFrame(
+        [
+            {"order_id": "A", "total_weight": 1.0, "priority_weight": 2.0, "cutoff_time": 5.0},
+            {"order_id": "B", "total_weight": 1.0, "priority_weight": 2.0, "cutoff_time": 5.0},
+        ]
+    )
+    pickers = _one_picker(100.0)
+    durations = {"A": 8.0, "B": 3.0}
+    for solver in ("highs", "gurobi"):
+        plain = solve_order_assignment(
+            orders,
+            pickers,
+            durations,
+            lateness_weight=1.0,
+            staged_assignment=True,
+            assignment_solver=solver,
+            time_limit=10.0,
+        )
+        ordered = solve_order_assignment(
+            orders,
+            pickers,
+            durations,
+            lateness_weight=1.0,
+            staged_assignment=True,
+            assignment_solver=solver,
+            time_limit=10.0,
+            load_stops={"A": 1.0, "B": 4.0},
+        )
+        assert set(plain["orders_fulfilled"]) == {"A", "B"}
+        assert set(ordered["orders_fulfilled"]) == {"A", "B"}
+        assert plain["objective_value"] == pytest.approx(4.0)
+        assert ordered["objective_value"] == pytest.approx(4.0)
+        assert plain["late_minutes"] == pytest.approx(9.0)
+        assert ordered["late_minutes"] == pytest.approx(6.0)
+        plain_lateness = next(row for row in plain["stages"] if row["stage"] == "lateness")
+        ordered_lateness = next(row for row in ordered["stages"] if row["stage"] == "lateness")
+        assert plain_lateness["incumbent"] == pytest.approx(9.0)
+        assert ordered_lateness["incumbent"] == pytest.approx(6.0)
+        plain_pos = {row["order_id"]: row["position"] for row in plain["schedule"]}
+        ordered_pos = {row["order_id"]: row["position"] for row in ordered["schedule"]}
+        assert plain_pos["A"] == 1
+        assert ordered_pos["B"] == 1
 
 
 def _write_depot(folder: Path) -> None:

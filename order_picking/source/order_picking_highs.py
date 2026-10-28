@@ -45,6 +45,7 @@ def solve_assignment_highs(
     abs_gap: Optional[float] = None,
     accept_incumbent: bool = False,
     objective_upper: Optional[float] = None,
+    load_stops: Optional[Dict[str, float]] = None,
 ) -> dict:
     """Solve the picker-assignment MILP with HiGHS.
 
@@ -193,7 +194,11 @@ def solve_assignment_highs(
     if dated:
         from assignment_reports import edd_sequence
 
-        sequence = [oid for oid in edd_sequence(order_ids, deadlines or {}) if oid in idx_c]
+        sequence = [
+            oid
+            for oid in edd_sequence(order_ids, deadlines or {}, load_stops)
+            if oid in idx_c
+        ]
         big_m = max((float(picker_shift[pid]) for pid in pickers), default=0.0)
         if big_m <= 0.0:
             big_m = 1.0

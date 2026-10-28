@@ -1,0 +1,21 @@
+{
+  "solver": "minizinc",
+  "scenario": "im_input_A_B",
+  "input_csv": "C:\\Users\\sudhe\\LoadMax\\data\\im_input_A_B.csv",
+  "input_sha256": "3c1ecbfe620f2f52274b75d490b0babfe183c7dc61f351b34d8619bc60930bd9",
+  "created_utc": "2026-08-24T08:17:56.349307+00:00",
+  "marketID": "A-B",
+  "n_vehicles": 6,
+  "n_full": 32,
+  "n_prtl": 2,
+  "n_positions": 30,
+  "n_layers": 2,
+  "backend": "highs",
+  "time_limit": 600.0,
+  "gap": 0.01,
+  "compile_only": true,
+  "warm_start_csv": "C:\\Users\\sudhe\\LoadMax\\optimization_results\\loading_instructions_highs_im_input_A_B.csv",
+  "warm_start_sha256": "ced9184b33d9db5feca65ab40368f60e7f8c7275900498047f7ead86e8d78306",
+  "static_model": "C:\\Users\\sudhe\\LoadMax\\loadmax\\minizinc\\truck_loading.mzn",
+  "static_driver": "C:\\Users\\sudhe\\LoadMax\\examples\\run_minizinc.py"
+}

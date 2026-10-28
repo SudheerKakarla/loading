@@ -31,6 +31,8 @@ python chunker/chunk_model.py --loads inputs/chunk_warehouse/truck_loads.csv --t
 
 `jobs.csv` `walk_minutes` from this command is the Held-Karp tour. The savings command still writes the nearest-neighbor walk. The formulation is `formulation.md`. The cost of keeping a fitting order in one job is `order_whole_cost_memo.md`.
 
+`--jack-tier-merges` is off by default. When it is on, a merge of two or more source orders may pass the pallet jack only if the job holds a line that jack cannot carry. A single source order that fits a picker stays whole. The heaviest-picker cap remains the default.
+
 Point the picker at one depot folder:
 
 ```text

@@ -113,6 +113,8 @@ def _normalize_im_input(params):
         "container_priority",
         "palletWeightDict",
         "palletHeightDict",
+        "palletLengthDict",
+        "palletWidthDict",
         "palletMaterialDict",
         "palletBatchDict",
         "palletNumCasesDict",

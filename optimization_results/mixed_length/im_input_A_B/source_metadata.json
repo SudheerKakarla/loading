@@ -1,0 +1,13 @@
+{
+  "solver": "mixed_length",
+  "scenario": "im_input_A_B",
+  "input_csv": "C:\\Users\\sudhe\\LoadMax\\data\\im_input_A_B.csv",
+  "input_sha256": "3c1ecbfe620f2f52274b75d490b0babfe183c7dc61f351b34d8619bc60930bd9",
+  "created_utc": "2026-08-24T17:27:58.186806+00:00",
+  "usable_length": 720.0,
+  "kmax": 15,
+  "distinct_lengths": [
+    48.0
+  ],
+  "compile_only": true
+}

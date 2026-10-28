@@ -84,7 +84,13 @@ class CoverCandidate:
 
 @dataclass(frozen=True)
 class ChunkModelSettings:
-    """Knobs for the set-partitioning chunker. Times are minutes."""
+    """Knobs for the set-partitioning chunker. Times are minutes.
+
+    ``jack_tier_merges`` stays off, so a job may still grow to the heaviest
+    picker. When it is on, two or more source orders may pass the pallet
+    jack only if the job holds a line that jack cannot carry. One source
+    order that fits any picker stays whole.
+    """
 
     max_job_lines: int = 15
     job_overhead: float = 5.0
@@ -103,6 +109,7 @@ class ChunkModelSettings:
     mip_gap: float = 0.0
     ignore_volume: bool = False
     same_stop: bool = False
+    jack_tier_merges: bool = False
 
     def __post_init__(self) -> None:
         if self.max_job_lines < 1:
@@ -496,6 +503,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         action="store_true",
         help="Keep each job to one stop. The default lets stops share a job.",
     )
+    parser.add_argument(
+        "--jack-tier-merges",
+        action="store_true",
+        help=(
+            "Let a merge pass the pallet jack only when a line already needs a forklift. "
+            "The default still sizes every job to the heaviest picker."
+        ),
+    )
     args = parser.parse_args(argv)
     settings = ChunkModelSettings(
         max_job_lines=args.max_job_lines,
@@ -513,6 +528,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         mip_gap=args.mip_gap,
         ignore_volume=args.ignore_volume,
         same_stop=args.destination_grouping,
+        jack_tier_merges=args.jack_tier_merges,
     )
     result = chunk_loads_model(
         pd.read_csv(args.loads),
@@ -726,7 +742,7 @@ def _cover_depot(
             False,
             solved.mip_gap,
         )
-    bundles = _savings_jobs(lines, depot_id, lookup, pickers, settings)
+    bundles = _savings_jobs(lines, depot_id, lookup, pickers, settings, order_of)
     cost = sum(_candidate_cost(bundle, depot_id, lookup, settings, tour_cache) for bundle in bundles)
     return bundles, cost, True, None
 
@@ -775,8 +791,10 @@ def _bundles_from_atoms(
     bundles: List[list] = []
     seen = set()
 
-    def add(bundle: Sequence) -> None:
+    def add(bundle: Sequence, atom_count: int) -> None:
         if not _bundle_ok(bundle, depot_id, pickers, settings):
+            return
+        if _jack_tier_blocks(bundle, atom_count, pickers, settings):
             return
         identity = tuple(sorted(line.line_key for line in bundle))
         if identity in seen:
@@ -788,21 +806,23 @@ def _bundles_from_atoms(
         width = len(atoms)
         for mask in range(1, 1 << width):
             chosen: List = []
+            atom_count = 0
             for bit in range(width):
                 if mask & (1 << bit):
                     chosen.extend(atoms[bit])
-            add(chosen)
+                    atom_count += 1
+            add(chosen, atom_count)
         return bundles
 
     for atom in atoms:
-        add(atom)
+        add(atom, 1)
     cw = _cw_settings(settings, pickers)
     units = []
     for atom in atoms:
         ordered = _nearest_neighbor(depot_id, atom, lookup)
         units.append(_Unit(ordered[0].line_key, ordered))
     for route in _savings_routes(units, depot_id, lookup, cw):
-        add(route.lines())
+        add(route.lines(), len(route.parts))
     return bundles
 
 
@@ -858,12 +878,83 @@ def _feasible_order_unions(
             for picked in chosen:
                 merged.extend(atom_lines[picked])
             if _bundle_ok(merged, depot_id, pickers, settings):
-                bundles.append(merged)
+                # A later line that needs a forklift can still justify this size.
+                if not _jack_tier_blocks(merged, len(chosen), pickers, settings):
+                    bundles.append(merged)
                 rec(index + 1, new_weight, new_volume, new_locs, new_must, new_count)
             chosen.pop()
 
     rec(0, 0.0, 0.0, frozenset(), False, 0)
     return bundles
+
+
+def _jack_limits(pickers: Sequence[PickerSpec]) -> Optional[Tuple[float, Optional[float]]]:
+    """Heaviest pallet-jack weight, and its roomiest volume when every jack has one."""
+    jacks = [picker for picker in pickers if picker.equipment_type == "pallet_jack"]
+    if not jacks:
+        return None
+    weight = max(picker.max_weight for picker in jacks)
+    volumes = [picker.max_volume for picker in jacks if picker.max_volume is not None]
+    volume = max(volumes) if len(volumes) == len(jacks) else None
+    return weight, volume
+
+
+def _line_above_jack(line, pickers: Sequence[PickerSpec], ignore_volume: bool) -> bool:
+    """True when this line fits no pallet jack."""
+    jacks = [picker for picker in pickers if picker.equipment_type == "pallet_jack"]
+    if not jacks:
+        return True
+    volume = None if ignore_volume else line.volume
+    return failure_reason(line.weight, volume, jacks) is not None
+
+
+def _jack_tier_blocks(
+    lines: Sequence,
+    atom_count: int,
+    pickers: Sequence[PickerSpec],
+    settings: ChunkModelSettings,
+) -> bool:
+    """True when a multi-order merge passes the jack without a line that needs it.
+
+    One source order is never blocked here. Order-whole already decided that
+    it stays in one job when any picker can carry it.
+    """
+    if not settings.jack_tier_merges or atom_count <= 1 or not lines:
+        return False
+    limits = _jack_limits(pickers)
+    if limits is None:
+        return False
+    if any(_line_above_jack(line, pickers, settings.ignore_volume) for line in lines):
+        return False
+    jack_weight, jack_volume = limits
+    weight = float(sum(line.weight for line in lines))
+    if weight > jack_weight + _EPS:
+        return True
+    if settings.ignore_volume or jack_volume is None:
+        return False
+    volume = _bundle_volume(lines)
+    return volume is not None and volume > jack_volume + _EPS
+
+
+def _order_group_key(line, order_of: Optional[Dict[str, Optional[str]]]) -> str:
+    if order_of is None:
+        return line.line_key
+    key = order_of.get(line.line_key)
+    if key is None:
+        return line.line_key
+    return key
+
+
+def _groups_by_order(lines: Sequence, order_of: Optional[Dict[str, Optional[str]]]) -> List[list]:
+    groups: Dict[str, list] = {}
+    order: List[str] = []
+    for line in lines:
+        key = _order_group_key(line, order_of)
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append(line)
+    return [groups[key] for key in order]
 
 
 def _bundle_ok(
@@ -902,11 +993,13 @@ def _savings_jobs(
     lookup: dict,
     pickers: Sequence[PickerSpec],
     settings: ChunkModelSettings,
+    order_of: Optional[Dict[str, Optional[str]]] = None,
 ) -> List[list]:
     """Clarke-Wright jobs for one dock, used when HiGHS has no cover to keep.
 
     A merge that does not fit one picker, or that has more than 16 locations,
     is replaced by one job per line so the fallback still covers every line.
+    A merge the jack-tier rule refuses is replaced by one job per source order.
     """
     cw = _cw_settings(settings, pickers)
     ordered = sorted(lines, key=lambda line: line.line_key)
@@ -914,8 +1007,17 @@ def _savings_jobs(
     bundles: List[list] = []
     for route in _savings_routes(units, depot_id, lookup, cw):
         bundle = route.lines()
-        if _bundle_ok(bundle, depot_id, pickers, settings):
+        groups = _groups_by_order(bundle, order_of)
+        blocked = _jack_tier_blocks(bundle, len(groups), pickers, settings)
+        if _bundle_ok(bundle, depot_id, pickers, settings) and not blocked:
             bundles.append(bundle)
+            continue
+        if blocked:
+            for group in groups:
+                if _bundle_ok(group, depot_id, pickers, settings):
+                    bundles.append(group)
+                else:
+                    bundles.extend([[line] for line in group])
             continue
         bundles.extend([[line] for line in bundle])
     return bundles
