@@ -1,10 +1,13 @@
 """Turn demand rows into pick lines at real stock locations.
 
-The rule is fixed and has no MIP. Whole pallets come from bulk stock. Whole
-cases come from pick-face stock, then from bulk, and keep that row's mode.
-Units below one case use an already-opened case, or open the smallest
-pick-face case that covers them. Inside a tier the earliest expiry wins,
-then the location nearest the dock, then the location id.
+The rule is fixed and has no MIP. Whole pallets come from bulk stock, and
+each pallet stays its own line. Whole cases come from pick-face stock, then
+from bulk, and keep that row's mode. Cases that share an order, a truck, a
+SKU, a location, a batch, and a mode are one line. Units below one case use
+an already-opened case, or open the smallest pick-face case that covers
+them, and join that line when the key matches. Inside a tier the earliest
+expiry wins, then the location nearest the dock, then the location id.
+Walking minutes count one depot-to-location leg per output line.
 
 This module does not read ``wh_inventory.csv``. The caller supplies
 ``stock.csv`` and ``sku_master.csv``.
@@ -97,6 +100,7 @@ def allocate_lines(
     shorts: List[dict] = []
     rejected: List[dict] = []
     opened: List[_Opened] = []
+    grouped: Dict[Tuple[str, str, str, str, str, str], dict] = {}
     serial = 0
     requested = 0.0
     pallet_units = 0.0
@@ -130,6 +134,35 @@ def allocate_lines(
                 "pallet_id": pallet_id,
             }
         )
+
+    def add_cases(
+        line: dict,
+        row_location: str,
+        batch_id: str,
+        pallet_id: str,
+        qty: float,
+        mode: str,
+        sku: dict,
+    ) -> None:
+        """Add cases to the one line for this order, location, batch, and mode."""
+        key = (
+            line["source_order_id"],
+            line["truck_id"],
+            line["sku_id"],
+            row_location,
+            batch_id,
+            mode,
+        )
+        current = grouped.get(key)
+        if current is None:
+            emit(line, row_location, batch_id, pallet_id, qty, mode, sku)
+            grouped[key] = loads[-1]
+            return
+        current["quantity"] += qty
+        current["weight"] = current["quantity"] * sku["unit_weight_kg"]
+        current["volume"] = current["quantity"] * sku["unit_volume_m3"]
+        if current["pallet_id"] != pallet_id:
+            current["pallet_id"] = ""
 
     for line in demands:
         sku = master.get(line["sku_id"])
@@ -178,7 +211,15 @@ def allocate_lines(
                 remaining -= case_qty
                 taken_cases += 1
                 case_units += case_qty
-                emit(line, choice.location_id, choice.batch_id, choice.pallet_id, case_qty, choice.location_type, sku)
+                add_cases(
+                    line,
+                    choice.location_id,
+                    choice.batch_id,
+                    choice.pallet_id,
+                    case_qty,
+                    choice.location_type,
+                    sku,
+                )
         residual = remaining - math.floor((remaining + _EPS) / case_qty) * case_qty
         unfilled_cases = remaining - residual
         if residual > _EPS:
@@ -187,7 +228,15 @@ def allocate_lines(
                 remaining -= residual
                 if opened_now:
                     opened_cases += 1
-                emit(line, used.location_id, used.batch_id, used.pallet_id, residual, "pickface", sku)
+                add_cases(
+                    line,
+                    used.location_id,
+                    used.batch_id,
+                    used.pallet_id,
+                    residual,
+                    "pickface",
+                    sku,
+                )
         if remaining > _EPS or unfilled_cases > _EPS:
             allocated = line["quantity"] - remaining
             shorts.append(

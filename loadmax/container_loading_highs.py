@@ -682,6 +682,8 @@ class ContainerLoadingOptimizerHiGHS:
                 return float(raw[int(container_id)])
             if float(container_id) in raw:
                 return float(raw[float(container_id)])
+        if container_id == 0 or container_id == 0.0:
+            return 0.5
         return 1.0
 
     def _set_constraint_flags(self) -> None:
@@ -733,6 +735,16 @@ class ContainerLoadingOptimizerHiGHS:
                 f"  Class R cap {plan.cap_r} on {len(plan.class_r_ids)} pallet ids, "
                 f"{plan.mode} consolidation, penalty {plan.lambda_r:g}"
             )
+            low = [
+                f"{cid}:{plan.lambda_for(cid):g}"
+                for cid in plan.lambda_by_truck
+                if plan.lambda_for(cid) + 1e-9 < plan.lambda_r
+            ]
+            if low:
+                print(
+                    "  Class R penalty on a lower-priority truck: "
+                    + ", ".join(low)
+                )
         if plan.class_t_cap_active:
             print(f"  Class T cap {plan.cap_t} on {len(plan.class_t_ids)} pallet ids")
         if plan.mix_active:
@@ -1503,15 +1515,17 @@ class ContainerLoadingOptimizerHiGHS:
         # ---- SKU penalty (positive coefficient because we minimise) ----
         reg.set_obj(("exceed_mtl_n",), sku_penalty * self.sku_penalty_factor)
 
-        # Class penalties are positive under minimisation. The same lambda
-        # applies to every truck, so no truck is preferred for Class R.
+        # Class penalties are positive under minimisation. Trucks in the
+        # priority scale share one penalty, so a higher truck priority is
+        # still preferred for Class R. A truck below that scale, such as an
+        # unset container 0, pays only its own priority.
         plan = self._cap_plan
         if plan is not None and plan.class_r_active:
             for v in veh_id:
-                reg.set_obj(("rc_present", v), plan.lambda_r)
+                reg.set_obj(("rc_present", v), plan.lambda_for(v))
         if plan is not None and plan.mix_active:
             for v in veh_id:
-                reg.set_obj(("rc_tc_mix", v), plan.mu_mix)
+                reg.set_obj(("rc_tc_mix", v), plan.mu_for(v))
 
         print("  Objective vector assembled (Pyomo 4-term fill + priority - SKU penalty).")
 

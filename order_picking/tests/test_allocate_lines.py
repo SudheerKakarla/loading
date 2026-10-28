@@ -33,11 +33,18 @@ def _master(**overrides) -> pd.DataFrame:
     return pd.DataFrame([row])
 
 
-def _stock(location_id: str, qty: float, location_type: str, expiry=1, pallet_id: str = "P") -> dict:
+def _stock(
+    location_id: str,
+    qty: float,
+    location_type: str,
+    expiry=1,
+    pallet_id: str = "P",
+    batch_id: str = "B",
+) -> dict:
     return {
         "sku_id": "S",
         "location_id": location_id,
-        "batch_id": "B",
+        "batch_id": batch_id,
         "pallet_id": pallet_id,
         "qty": qty,
         "expiry": expiry,
@@ -165,3 +172,50 @@ def test_short_stock_is_refused_unless_allowed_and_a_missing_sku_is_rejected(tmp
             _travel(),
             tmp_path / "missing",
         )
+
+
+def test_many_cases_at_one_location_are_one_line(tmp_path):
+    """240 units at 6 per case are one line, and the walk is counted once."""
+    stock = pd.DataFrame([_stock("LF", 240, "pickface")])
+    assert allocate_lines(_demand(240), stock, _master(case_qty=6, pallet_qty=""), _travel(), tmp_path) == 0
+    loads = pd.read_csv(tmp_path / "truck_loads.csv")
+    assert len(loads) == 1
+    assert loads.iloc[0]["quantity"] == pytest.approx(240)
+    assert loads.iloc[0]["weight"] == pytest.approx(480)
+    assert loads.iloc[0]["pick_mode"] == "pickface"
+    summary = pd.read_csv(tmp_path / "allocation_summary.csv")
+    assert summary.walking_minutes.iloc[0] == pytest.approx(1.0)
+    assert summary.full_case_rate.iloc[0] == pytest.approx(1.0)
+
+
+def test_cases_at_two_batches_stay_two_lines(tmp_path):
+    stock = pd.DataFrame(
+        [
+            _stock("LF", 6, "pickface", expiry=1, batch_id="B1", pallet_id="P1"),
+            _stock("LF", 6, "pickface", expiry=2, batch_id="B2", pallet_id="P2"),
+        ]
+    )
+    assert allocate_lines(_demand(12), stock, _master(case_qty=6, pallet_qty=""), _travel(), tmp_path) == 0
+    loads = pd.read_csv(tmp_path / "truck_loads.csv")
+    assert list(loads.batch_id) == ["B1", "B2"]
+    assert list(loads.quantity) == pytest.approx([6, 6])
+    summary = pd.read_csv(tmp_path / "allocation_summary.csv")
+    assert summary.walking_minutes.iloc[0] == pytest.approx(2.0)
+
+
+def test_a_pallet_and_a_case_at_the_same_location_stay_apart(tmp_path):
+    stock = pd.DataFrame([_stock("LB", 16, "bulk", pallet_id="BULK")])
+    assert allocate_lines(_demand(14), stock, _master(case_qty=4, pallet_qty=10), _travel(), tmp_path) == 0
+    loads = pd.read_csv(tmp_path / "truck_loads.csv")
+    assert list(loads.pick_mode) == ["bulk", "bulk"]
+    assert list(loads.quantity) == pytest.approx([10, 4])
+    assert list(loads.location_id) == ["LB", "LB"]
+
+
+def test_a_remainder_joins_the_case_line_at_the_same_location(tmp_path):
+    stock = pd.DataFrame([_stock("LF", 20, "pickface")])
+    assert allocate_lines(_demand(7), stock, _master(case_qty=4, pallet_qty=""), _travel(), tmp_path) == 0
+    loads = pd.read_csv(tmp_path / "truck_loads.csv")
+    assert len(loads) == 1
+    assert loads.iloc[0]["quantity"] == pytest.approx(7)
+    assert loads.iloc[0]["location_id"] == "LF"

@@ -211,7 +211,7 @@ COMPLETE_INPUT_PARAMS = {
     # 'tempControlledMaxPallets': 26,         # optional cap; Class T is palletRefrigeratedDict
     # 'containerMaxPallets': {1: 26, 2: 24},
     # 'containerMaxWt': {1: 42000, 2: 40000},
-    # 'reducedCapConsolidationWeight': 0.5,   # times the smallest explicit priority and the smallest partial fraction
+    # 'reducedCapConsolidationWeight': 0.5,   # times the smallest explicit priority and the smallest Class R partial fraction
     # 'reducedCapTempMixWeight': 0.25,        # prefer not to mix Class R and Class T
     # 'reducedCapConsolidationMode': 'soft',  # 'hard' caps the number of Class R trucks
     'max_front_wt': 20000,    # Max front axle weight

@@ -457,6 +457,22 @@ class CapacityClassTests(unittest.TestCase):
         self.assertAlmostEqual(plan.lambda_r, 45.0)
         self.assertAlmostEqual(plan.mu_mix, 22.5)
 
+    def test_a_non_class_partial_does_not_shrink_the_penalty(self):
+        params = make_instance(
+            n_trucks=2,
+            n_pos=2,
+            n_layers=1,
+            fill_demand=0,
+            r_demand=1,
+            cap_r=1,
+            priorities={1: 800, 2: 300},
+            include_partial=True,
+            partial_fraction=0.01,
+        )
+        plan = resolve_capacity_classes(params)
+        self.assertEqual(plan.lambda_r, 150)
+        self.assertEqual(plan.mu_mix, 75)
+
     def test_unset_container_zero_does_not_shrink_the_penalty(self):
         params = make_instance(
             n_trucks=1,
@@ -473,6 +489,30 @@ class CapacityClassTests(unittest.TestCase):
         plan = resolve_capacity_classes(params)
         self.assertEqual(params["container_priority"][0], 0.5)
         self.assertEqual(plan.lambda_r, 400.0)
+        self.assertAlmostEqual(plan.lambda_for(0), 0.25)
+        self.assertEqual(plan.lambda_for(1), 400.0)
+        self.assertAlmostEqual(plan.mu_for(0), 0.125)
+        self.assertEqual(plan.mu_for(1), 200.0)
+
+        direct = make_instance(
+            n_trucks=1,
+            n_pos=1,
+            n_layers=1,
+            fill_demand=0,
+            r_demand=2,
+            cap_r=1,
+            priorities={1: 800},
+        )
+        direct["containerList"] = [0, 1]
+        direct["container_priority"] = {1: 800}
+        direct_plan = resolve_capacity_classes(direct)
+        self.assertEqual(direct["container_priority"][0], 0.5)
+        self.assertEqual(direct_plan.lambda_r, 400.0)
+        self.assertAlmostEqual(direct_plan.lambda_for(0), 0.25)
+        _, result, _, instructions = solve(direct)
+        self.assertEqual(result["status"], 0, result["message"])
+        loaded = {item.container for item in instructions if item.palletID == "CLASS_R"}
+        self.assertEqual(loaded, {0, 1})
 
         explicit = make_instance(
             n_trucks=1,

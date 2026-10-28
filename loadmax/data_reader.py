@@ -200,9 +200,6 @@ def _normalize_im_input(params):
     for k, v in (params.get("container_priority") or {}).items():
         cp[_maybe_int(k)] = v
     params["container_priority"] = cp
-    params["_container_priority_supplied"] = {_canon_id(key) for key in cp}
-    for c in params.get("containerList") or []:
-        params["container_priority"].setdefault(c, 0.5 if c == 0 else 1.0)
 
     if "max_prior_full" not in params:
         params["max_prior_full"] = {p: 0 for p in params.get("fullPalletList") or []}
@@ -437,48 +434,98 @@ def _priority_of(params: dict, container_id: Any) -> float:
     return 1.0
 
 
-def _penalty_scale(params: dict, containers: list) -> float:
-    """Smallest explicit truck priority. An unset container 0 is not a truck.
+def _explicit_container_ids(params: dict) -> set:
+    """Container ids whose priority the caller set.
 
-    The loading objective still gives that container priority 0.5. Leaving it
-    in this minimum would shrink the class penalty. An explicit priority,
-    including an explicit 0.5, is kept.
+    ``resolve_capacity_classes`` records this on the first call, then fills
+    a missing container 0 with 0.5 and every other missing truck with 1.0.
+    A second call keeps the record, so that fill is not treated as explicit.
+    Direct ``inputParams`` and a CSV read use the same record.
     """
-    supplied = params.get("_container_priority_supplied")
-    known = None
-    if isinstance(supplied, (set, frozenset, list, tuple)):
-        known = {_canon_id(item) for item in supplied}
+    stored = params.get("_explicit_container_priority")
+    if isinstance(stored, (set, frozenset, list, tuple)):
+        return {_canon_id(item) for item in stored}
+    raw = params.get("container_priority") or {}
+    explicit = {_canon_id(key) for key in raw} if isinstance(raw, dict) else set()
+    params["_explicit_container_priority"] = set(explicit)
+    return explicit
+
+
+def _fill_missing_container_priorities(
+    params: dict, containers: list, explicit: set
+) -> None:
+    """Give every truck a priority. An unset container 0 stays at 0.5."""
+    raw = params.get("container_priority")
+    filled = dict(raw) if isinstance(raw, dict) else {}
+    present = {_canon_id(key) for key in filled}
+    for container_id in containers:
+        canon = _canon_id(container_id)
+        if canon in explicit or canon in present:
+            continue
+        filled[container_id] = 0.5 if canon == 0 else 1.0
+        present.add(canon)
+    params["container_priority"] = filled
+
+
+def _penalty_scale(params: dict, containers: list, explicit: set) -> float:
+    """Smallest truck priority that counts toward the shared class penalty.
+
+    An unset container 0 loads at 0.5. Putting that placeholder into this
+    minimum would shrink the penalty on every real truck. An explicit
+    priority, including an explicit 0.5, is kept. Any other missing truck
+    counts at its filled priority.
+    """
     values: list[float] = []
     for container_id in containers:
-        if (
-            known is not None
-            and _canon_id(container_id) not in known
-            and _canon_id(container_id) == 0
-        ):
+        canon = _canon_id(container_id)
+        if canon == 0 and canon not in explicit:
             continue
         values.append(_priority_of(params, container_id))
     return min(values, default=1.0)
 
 
-def _min_partial_fraction(params: dict) -> float:
-    """Smallest partial reward fraction. Missing partials count as a full pallet."""
-    pallets = list(params.get("partialPalletList") or [])
-    if not pallets:
-        return 1.0
+def _partial_fraction_of(params: dict, pallet: Any) -> float:
+    """Reward fraction for one partial. A bad or missing value counts as full."""
     fractions = params.get("partialFractionValueForPartialPallet") or {}
+    raw = fractions.get(pallet, 1.0)
+    if raw is None:
+        raw = fractions.get(str(pallet), 1.0)
+    try:
+        fraction = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(fraction) or fraction <= 0:
+        return 1.0
+    return fraction
+
+
+def _min_class_r_partial_fraction(params: dict, class_r: set) -> float:
+    """Smallest Class R partial fraction. Other partials do not shrink the penalty.
+
+    A full Class R pallet counts as 1. A very small Class R fraction makes
+    the penalty small; raise ``reducedCapConsolidationWeight`` when that
+    consolidation is too weak.
+    """
+    if not class_r:
+        return 1.0
+    class_keys = {_canon_id(item) for item in class_r}
     values: list[float] = []
-    for pallet in pallets:
-        raw = fractions.get(pallet, 1.0)
-        if raw is None:
-            raw = fractions.get(str(pallet), 1.0)
-        try:
-            fraction = float(raw)
-        except (TypeError, ValueError):
-            fraction = 1.0
-        if not math.isfinite(fraction) or fraction <= 0:
-            fraction = 1.0
-        values.append(fraction)
+    for pallet in params.get("partialPalletList") or []:
+        if pallet not in class_r and _canon_id(pallet) not in class_keys:
+            continue
+        values.append(_partial_fraction_of(params, pallet))
     return min(values) if values else 1.0
+
+
+def _mapped_coeff(table: Dict[Any, float], container_id: Any, default: float) -> float:
+    """Look up a per-truck coefficient. ``1`` and ``1.0`` are one id."""
+    if container_id in table:
+        return table[container_id]
+    key = _canon_id(container_id)
+    for cand, val in table.items():
+        if _canon_id(cand) == key:
+            return val
+    return default
 
 
 @dataclass
@@ -498,9 +545,24 @@ class CapacityPlan:
     mode: str
     lambda_r: float
     mu_mix: float
+    lambda_by_truck: Dict[Any, float]
+    mu_by_truck: Dict[Any, float]
     demand_r: int
     demand_t: int
     default_n: int
+
+    def lambda_for(self, container_id: Any) -> float:
+        """Class R penalty charged on this truck.
+
+        Trucks in the priority scale share ``lambda_r``. A truck whose
+        priority is below that scale pays its own priority instead, so a
+        Class R pallet is still worth loading there.
+        """
+        return _mapped_coeff(self.lambda_by_truck, container_id, self.lambda_r)
+
+    def mu_for(self, container_id: Any) -> float:
+        """Mix penalty charged on this truck. Same rule as ``lambda_for``."""
+        return _mapped_coeff(self.mu_by_truck, container_id, self.mu_mix)
 
     @property
     def class_r_active(self) -> bool:
@@ -591,9 +653,12 @@ def resolve_capacity_classes(params: dict) -> CapacityPlan:
     A blank ``reducedCapMaxPallets`` / ``tempControlledMaxPallets`` leaves that
     rule off. An explicit zero or negative value raises. Omitted weights use
     0.5 and 0.25, scaled by the smallest explicit container priority and by
-    the smallest partial fraction. An unset container 0 does not shrink that
-    scale. Omitted mode is soft. A truck whose nominal cap is below the class
-    cap keeps its own nominal cap. Nominal pallet cap defaults to
+    the smallest Class R partial fraction. An unset container 0 loads at 0.5
+    and does not shrink that scale. Its own penalty is capped at that
+    priority, so a Class R pallet can still land there. A direct
+    ``inputParams`` dict gets the same rule as a CSV read. Omitted mode is
+    soft. A truck whose nominal cap is below the class cap keeps its own
+    nominal cap. Nominal pallet cap defaults to
     ``len(layerList) * len(positionList)``. Calling this twice is safe.
     """
     full = list(params.get("fullPalletList") or [])
@@ -836,16 +901,33 @@ def resolve_capacity_classes(params: dict) -> CapacityPlan:
     if cap_r is not None or cap_t is not None:
         demand_t = sum(_units(plt) for plt in class_t)
 
-    # The penalty stays below the smallest partial on the cheapest explicit
-    # truck. A negative priority is treated as zero so the penalty cannot
-    # become a reward for opening more Class R trucks. With no partials the
-    # fraction is 1, so a full pallet is the bound.
-    scale = _penalty_scale(params, containers)
+    # The shared penalty stays below the smallest Class R partial on the
+    # cheapest explicit truck. A negative priority is treated as zero so the
+    # penalty cannot become a reward for opening more Class R trucks. With
+    # no Class R partials the fraction is 1. An unset container 0 is left
+    # out of the shared scale and then capped at its own priority.
+    explicit = _explicit_container_ids(params)
+    _fill_missing_container_priorities(params, containers, explicit)
+    fraction = _min_class_r_partial_fraction(params, class_r)
+    scale = _penalty_scale(params, containers, explicit)
     if scale < 0:
         scale = 0.0
-    scale *= _min_partial_fraction(params)
+    scale *= fraction
     lambda_r = consolidation_weight * scale if cap_r is not None else 0.0
     mu_mix = mix_weight * scale if cap_r is not None else 0.0
+    lambda_by: Dict[Any, float] = {}
+    mu_by: Dict[Any, float] = {}
+    for container_id in containers:
+        priority = _priority_of(params, container_id)
+        if priority < 0:
+            priority = 0.0
+        own = priority * fraction
+        if cap_r is None:
+            lambda_by[container_id] = 0.0
+            mu_by[container_id] = 0.0
+            continue
+        lambda_by[container_id] = min(lambda_r, consolidation_weight * own)
+        mu_by[container_id] = min(mu_mix, mix_weight * own)
 
     return CapacityPlan(
         nominal_cap=nominal,
@@ -861,6 +943,8 @@ def resolve_capacity_classes(params: dict) -> CapacityPlan:
         mode=mode if cap_r is not None else "soft",
         lambda_r=lambda_r,
         mu_mix=mu_mix,
+        lambda_by_truck=lambda_by,
+        mu_by_truck=mu_by,
         demand_r=demand_r,
         demand_t=demand_t,
         default_n=default_n,
