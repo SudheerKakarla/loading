@@ -248,6 +248,7 @@
   <a href="#c-sku">10. SKU count penalty</a>
   <a href="#c-prior">11. Priority bonus cap</a>
   <a href="#c-vdr">12. G2 / G3 / G4</a>
+  <a href="#c-class">13. Class caps</a>
   <a href="#flags">What is on for A-B</a>
   <div class="g">Outputs</div>
   <a href="#out">Loading instructions</a>
@@ -336,6 +337,20 @@
     <tr><td><code>skuPriorityIncentive</code></td><td>26 of 31 materials, ranks 1 / 2 / 3 / 5</td><td>Membership turns on the 2×; the rank number is unused on trucks</td></tr>
     <tr><td><code>max_prior_full / max_prior_prtl</code></td><td>from Excel YES / Balance Pallets</td><td>Upper bound on extra \(y^{\text{prior}}\) bonus</td></tr>
     <tr><td><code>sku_penalty</code> × <code>sku_penalty_factor</code></td><td>1 × 3</td><td>Cost of using more than 31 distinct SKUs (across trucks)</td></tr>
+  </tbody>
+</table>
+<h3>Optional truck caps</h3>
+<p class="lede">Absent keys leave the A-B model, objective, and summary columns unchanged. A-B has none of these keys.</p>
+<table>
+  <thead><tr><th>Key</th><th>When it is set</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td><code>palletReducedCapClassDict</code> / <code>reducedCapMaterialList</code></td><td>Yes, or a material id</td><td>Marks Class R pallets</td></tr>
+    <tr><td><code>reducedCapMaxPallets</code></td><td>positive integer</td><td>Pallet cap of a truck that holds any Class R pallet. Blank leaves the rule off. Zero, a negative, or a fraction raises</td></tr>
+    <tr><td><code>tempControlledMaxPallets</code></td><td>positive integer</td><td>Same rule for Class T, which reuses <code>palletRefrigeratedDict</code></td></tr>
+    <tr><td><code>reducedCapConsolidationWeight</code></td><td>default 0.5</td><td>Class R opening penalty, times the scale below</td></tr>
+    <tr><td><code>reducedCapTempMixWeight</code></td><td>default 0.25</td><td>Penalty for a truck that holds both Class R and Class T</td></tr>
+    <tr><td><code>reducedCapConsolidationMode</code></td><td><code>soft</code> or <code>hard</code></td><td>Hard limits how many trucks may hold Class R</td></tr>
+    <tr><td><code>containerMaxPallets</code> / <code>containerMaxWt</code></td><td>per truck</td><td>Override the pad count and <code>max_wt</code> for that truck</td></tr>
   </tbody>
 </table>
 <p class="note"><code>palletProfitDict</code> is in the dump (10/rank on some markets). Original Pyomo does not use it. First-truck loading is <code>container_priority</code>, not profit.</p>
@@ -452,12 +467,32 @@ h_{v,p} = \sum_{l,i} h_i\, y^{\text{full}}_{v,l,p,i} + \sum_{l,j} h_j\, y^{\text
   <p class="note">A listed SKU on truck 1 scores \(800 \times 2 = 1600\). The same pallet on truck 6 scores \(300 \times 2 = 600\). That is why priority freight lands on the first trucks — not because of <code>palletProfitDict</code>.</p>
 </div>
 <p>The older fill (no extra ×2 for listed SKUs) is commented in <code>_build_objective</code>, not deleted. Milk-run (position × priority³) is built only when ocean mode is on; A-B trucks do not use it. The integer rank 1/2/3/5 in <code>skuPriorityIncentive</code> is unused on the truck fill — only membership matters.</p>
+<p>
+  When Class R is active, the same objective subtracts a penalty for opening the class and, when the mix weight is positive, for mixing it with Class T.
+  HiGHS minimises, so those coefficients are stored positive.
+</p>
+<div class="formula">
+\[
+\lambda_R = w_R \cdot c_{\min} \cdot f_R
+\qquad
+\mu = w_{\mathrm{mix}} \cdot c_{\min} \cdot f_R
+\]
+</div>
+<p>
+  \(c_{\min}\) is the smallest explicit <code>container_priority</code>. \(f_R\) is the smallest Class R partial fraction, or \(1\) when no Class R pallet is partial. A partial that is not Class R does not change \(f_R\).
+  Defaults are \(w_R = 0.5\) and \(w_{\mathrm{mix}} = 0.25\). Priorities 800 and 300 with no Class R partial give \(\lambda_R = 150\) and \(\mu = 75\). A fraction \(0.3\) on a Class R partial gives \(45\) and \(22.5\).
+  A very small Class R fraction makes consolidation weak. <code>reducedCapConsolidationWeight</code> is that knob, and the default stays \(0.5\). A weight above \(1\) can leave a Class R pallet off, because demand is at most once.
+</p>
+<p>
+  An unset container 0 still loads at priority \(0.5\) and is left out of \(c_{\min}\), so it does not shrink the penalty on the other trucks. That truck pays \(\min(\lambda_R,\, w_R \cdot 0.5 \cdot f_R)\) for opening Class R, and the same idea for the mix penalty, so a Class R pallet can still land there. An explicit priority, including an explicit \(0.5\), stays in \(c_{\min}\). A direct <code>inputParams</code> dict follows the same rule as a CSV read. A-B trucks are numbered \(1\ldots 6\) and have no class keys, so both penalties are \(0\).
+</p>
 
 <h2 id="cons">Constraints</h2>
 <p class="lede">Each block is one family of rows in the HiGHS matrix. Examples use A-B pads and the HiGHS load where it helps.</p>
 
 <h3 id="c-weight">1. Total cargo weight</h3>
-<div class="formula">\[ \sum_{l,p} w_{v,l,p} \le 42000 \quad \forall v \]</div>
+<div class="formula">\[ \sum_{l,p} w_{v,l,p} \le W_v^{\max} \quad \forall v \]</div>
+<p>On A-B, \(W_v^{\max}\) is 42,000 lb for every truck. A set <code>containerMaxWt</code> replaces that number on the trucks it names.</p>
 <div class="ex">
   Truck 1 loaded 41,936 lb (99.8% of cap). One more ~1,200 lb pallet on that truck is infeasible even if a pad is free.
 </div>
@@ -654,6 +689,44 @@ E \ge \sum_v \sum_s u_{v,s} - 31
 </table>
 <p>A-B encodes stack-factor 2 as G3 in the input (nothing on top). Turning VDR on would forbid a second pallet on those columns.</p>
 
+<h3 id="c-class">13. Optional class caps</h3>
+<p class="lede">Built only when a class key is present. A-B has no class keys, so these rows are absent and the no-keys model is unchanged.</p>
+<p>
+  \(I^R_v = 1\) when truck \(v\) holds any Class R pallet. Each Class R assignment forces the indicator on, and the sum of those assignments keeps it off when the truck has none. One summed big-M row is not used.
+  \(\bar n_v = \min(n_v, \mathrm{cap}_R)\). A truck whose nominal pad count is below the class cap keeps that nominal count. The same pattern applies to Class T.
+</p>
+<div class="formula">
+\[
+y \le I^R_v
+\quad\text{for each Class R assignment } y
+\qquad
+\sum y \ge I^R_v
+\]
+</div>
+<div class="formula">
+\[
+\sum_{l,p}(F_{v,l,p} + P_{v,l,p})
+\le n_v - (n_v - \bar n_v)\, I^R_v
+\]
+</div>
+<p>
+  Soft mode only charges the penalty. Hard mode also limits how many trucks may open Class R. The limit fills the largest \(\bar n_v\) first until Class R demand is covered. When every truck can hold the class cap and the fleet is large enough, that count is \(\lceil D_R / \mathrm{cap}_R \rceil\). A cap above every truck’s nominal raises on read.
+</p>
+<div class="formula">
+\[
+\sum_v I^R_v \le L
+\qquad\text{hard mode only}
+\]
+</div>
+<div class="formula">
+\[
+M_v \ge I^R_v + I^T_v - 1
+\]
+</div>
+<div class="ex">
+  Four trucks with nominal caps 3, 3, 3, and 8, class cap 6, and Class R demand 10. Applicable caps are 3, 3, 3, and 6. Largest first, 6 + 3 + 3 covers 10, so hard mode allows 3 trucks. \(\lceil 10/6 \rceil = 2\) would be too small, because 6 + 3 = 9.
+</div>
+
 <h2 id="flags">What is actually on for the A-B truck solve</h2>
 <table>
   <thead><tr><th>Switch</th><th>A-B HiGHS</th><th>Notes</th></tr></thead>
@@ -666,6 +739,8 @@ E \ge \sum_v \sum_s u_{v,s} - 31
     <tr><td>G2/G3/G4</td><td><span class="warn">off</span></td><td>CLI default</td></tr>
     <tr><td>Milk-run</td><td><span class="warn">off</span></td><td>Ocean only</td></tr>
     <tr><td>Max SKU hard cap</td><td><span class="warn">off</span></td><td>Penalty only</td></tr>
+    <tr><td>Class R / Class T caps</td><td><span class="warn">off</span></td><td>A-B has no class keys, so \(\lambda_R = \mu = 0\)</td></tr>
+    <tr><td>Per-truck pallet or weight cap</td><td><span class="warn">off</span></td><td>No <code>containerMaxPallets</code> or <code>containerMaxWt</code></td></tr>
   </tbody>
 </table>
 
@@ -698,7 +773,7 @@ E \ge \sum_v \sum_s u_{v,s} - 31
 </table>
 <p>
   Pallet util = loaded / \(30\times 2 = 60\).
-  Weight util = cargo / 42,000.
+  Weight util on A-B is cargo / 42,000. When <code>containerMaxWt</code> is set, the denominator is that truck’s cap.
   Volume util = \(\sum h_p / 259\) as above.
   Front/rear = the A+C / B+D sums, not DOT tandem readings.
 </p>

@@ -200,9 +200,14 @@
 <main>
 
 <h2 id="path">End to end</h2>
-<p class="lede">Three programs, in order. Each one writes files the next one reads. Pallet loading is a separate model, <a href="loadmax_model.html">loadmax_model.html</a>, and these files are not its input.</p>
+<p class="lede">The sample path is three programs, in order. Each one writes files the next one reads. Stock placement is optional and sits in front of the chunker. Pallet loading is a separate model, <a href="loadmax_model.html">loadmax_model.html</a>, and these files are not its input.</p>
 <table>
   <tr><th>Step</th><th>Program</th><th>What it does</th></tr>
+  <tr>
+    <td>Optional. Stock</td>
+    <td><code>chunker/allocate_lines.py</code></td>
+    <td>Places demand onto stock before the chunker when a stock file is supplied. A whole pallet stays its own line. Cases that share order, truck, SKU, location, batch, and mode become one line, and a leftover at that same key joins it. Each output line pays one walk from the depot to that location. The 16-truck sample is already a truck-load file and skips this step.</td>
+  </tr>
   <tr>
     <td>1. Truck loads</td>
     <td><code>chunker/build_truck_loads.py</code></td>
@@ -247,7 +252,7 @@ python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inp
   On <code>--staged-assignment</code> any positive <code>--prefer-jack</code> minimises that count with coefficient 1. The 16-truck result is under Open decisions.
   <code>--staged-assignment</code> releases must-ship jobs by count, then the other jobs by weight, then minimises lateness. The weighted sum stays the default.
   The chunker's 5 minutes are a batching charge, and the picker leaves them out of the walk.
-  <code>run_docks.py</code> solves each depot folder and then raises if one picker's summed busy minutes exceed <code>shift_duration</code>. A pass is that minute total. Clock overlap and the walk between docks stay outside the screen. Each solve still sees the full picker file. The picker math is <a href="order_picking_model.html">order_picking_model.html</a>.
+  <code>run_docks.py</code> solves each depot folder and then raises if one picker's summed busy minutes exceed the minutes left on <code>shift_duration</code>. A pass is that minute total. Clock overlap and the walk between docks stay outside the screen. A named <code>home_depot</code> keeps that picker on one dock. A blank home, and a picker file with no home column, still enters every dock. The picker math is <a href="order_picking_model.html">order_picking_model.html</a>.
 </p>
 <p>
   On 2026-10-21 that dock command, with lateness weight 1 and a 60 second stage limit, released every job on both docks under the weighted objective and again under <code>--staged-assignment</code>: 84 of 84 at PACK_A and 87 of 87 at PACK_B, late minutes 0, every stage <code>proven</code>.
@@ -271,9 +276,10 @@ python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inp
 <h2 id="io">Inputs and outputs</h2>
 <table>
   <tr><th>In</th><th>What it holds</th></tr>
-  <tr><td><code>truck_loads.csv</code></td><td>One row per line: <code>truck_id</code>, <code>depot_id</code>, <code>item_id</code>, <code>location_id</code>, <code>weight</code>. Optional <code>volume</code>, <code>destination_id</code>, <code>source_order_id</code>, <code>pick_time</code>, <code>must_ship</code>, <code>departure_time</code>, and others.</td></tr>
+  <tr><td><code>truck_loads.csv</code></td><td>One row per line: <code>truck_id</code>, <code>depot_id</code>, <code>item_id</code>, <code>location_id</code>, <code>weight</code>. Optional <code>volume</code>, <code>destination_id</code>, <code>source_order_id</code>, <code>pick_time</code>, <code>pick_mode</code> (<code>bulk</code> or <code>pickface</code>), <code>must_ship</code>, <code>departure_time</code>, and others.</td></tr>
   <tr><td><code>travel_times.csv</code></td><td>Walking minutes between slots and docks. The same table the picker uses.</td></tr>
-  <tr><td><code>pickers.csv</code></td><td>Each picker's equipment, weight limit, volume limit, and shift length. The chunker uses the caps. The picker also uses the shift.</td></tr>
+  <tr><td><code>pickers.csv</code></td><td>Each picker's equipment, weight limit, volume limit, and shift length. Optional <code>allowed_modes</code> and <code>home_depot</code>. The chunker uses the caps. The picker also uses the shift.</td></tr>
+  <tr><td><code>mode_profile.csv</code></td><td>Optional. Per-mode line, weight, and volume caps, plus pick time and job overhead. Absent, the global caps and the 0.5 minute blank-line pick time stay in force.</td></tr>
 </table>
 <table>
   <tr><th>Out</th><th>What it holds</th></tr>
@@ -281,7 +287,7 @@ python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inp
   <tr><td><code>order_items.csv</code></td><td>One row per line. The model writes those lines in nearest-neighbor order from the dock.</td></tr>
   <tr><td><code>jobs.csv</code></td><td>Per job: cutoff, priority, line count, <code>walk_minutes</code>, and <code>exceeds_capacity</code>. For the model, <code>walk_minutes</code> is the Held–Karp tour and <code>exceeds_capacity</code> is false, because a job that fits nobody is rejected instead. The savings command stores the nearest-neighbor tour and can mark a single over-cap line true.</td></tr>
   <tr><td><code>by_depot/&lt;depot_id&gt;/</code></td><td>The same files for one dock, ready for the picker.</td></tr>
-  <tr><td><code>rejected.csv</code></td><td>Lines or orders no single picker can carry, with the reason.</td></tr>
+  <tr><td><code>rejected.csv</code></td><td>Lines or orders no single picker can carry, with the reason. The cover judges one mode at a time, so a failing <code>bulk</code> group drops only those lines and a fitting <code>pickface</code> group stays. <code>record_id</code> stays the order id.</td></tr>
   <tr><td><code>solve.csv</code></td><td><code>truck_id</code>, <code>depot_id</code>, <code>minutes</code>, <code>mip_gap</code>, <code>fallback</code>.</td></tr>
 </table>
 <p>The commands are in <a href="#path">End to end</a>. <code>solve.csv</code> <code>minutes</code> is the full objective: the Held–Karp walks, plus 5 minutes per job, plus the pick times. The sum of <code>walk_minutes</code> is the walking part alone.</p>
@@ -305,6 +311,8 @@ python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inp
   <div class="card"><strong>Stops can mix</strong>Orders for different stops at the same dock can share a job. <code>--destination-grouping</code> keeps one stop per job.</div>
   <div class="card"><strong>Too big</strong>An order no single picker can carry goes to <code>rejected.csv</code>. It is not split to force a job.</div>
   <div class="card"><strong>Must-ship</strong>Must-ship lines carry a flat priority weight of 100000 on their job. That weight is not in the minutes objective.</div>
+  <div class="card"><strong>One mode</strong>Bulk and pick-face stay in different jobs. The cover rejects an order one mode at a time, so one mode can leave while the other stays.</div>
+  <div class="card"><strong>Mode caps</strong>A filled line, weight, or volume cap is the smaller of the mode value and the global value. Pick time and job overhead take the mode value when the profile sets them.</div>
 </div>
 <p>
   A must-ship line rides only in a priority-eligible job. By default that is any feasible job containing it;
@@ -371,9 +379,9 @@ python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inp
 \]
 </div>
 <p>
-  \(\theta\) is 5 minutes per job. \(\pi_l\) is the line's own pick time, or 0.5 minutes when the file leaves it blank.
+  \(\theta\) is 5 minutes per job, or that mode’s overhead when the profile sets one. \(\pi_l\) is the line's own pick time, or 0.5 minutes when the file leaves it blank, or the mode’s pick time when the profile sets one and the line is blank.
   Under an exact cover the pick times add up to the same total for every split, so they do not change which cover wins.
-  Weight, volume, and the 15-line limit are not rows in the model: a job that breaks them is never built.
+  Weight, volume, and the 15-line limit are applied when a job is built, so a job that breaks them is never a row. A mode profile uses the smaller of its cap and that global cap. Its pick time and overhead replace the global values in \(c_k\) when the profile sets them.
   A truck with two docks gets two models, because each walk starts and ends at its own dock.
 </p>
 
@@ -436,7 +444,7 @@ python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inp
 <ul>
   <li><strong>Keeping an order whole.</strong> The rule stays. On this wave it costs at least 604 minutes against a savings run that may split orders. The note for the owner is <code>order_picking/chunker/order_whole_cost_memo.md</code>. Splitting only the large orders has not been measured.</li>
   <li><strong>Pallet jack for a light job.</strong> <code>--prefer-jack</code> defaults to 0. On <code>--staged-assignment</code> any positive value minimises the count of jack-eligible jobs given to a forklift. The 2026-10-21 run kept every release and zero lateness, proved that count at 0, and then booked PJ04 and PJ08 past a shared 480-minute shift. The default stays 0. Reports are <code>outputs/chunk_assign/gap_wave/staged_prefer_jack/</code>.</li>
-  <li><strong>One crew for both docks.</strong> Each solve still reads the full picker file, so the 12 people are counted twice. <code>run_docks.py</code> sums busy minutes against <code>shift_duration</code>. That sum caught PJ04 at 506.5 and PJ08 at 504.7 on the prefer-jack plan. A total that still fits can overlap on the clock, and the 1.1-minute walk is outside the sum. A home dock is not assigned.</li>
+  <li><strong>One crew for both docks.</strong> A named <code>home_depot</code> keeps that picker on one dock. A blank home still enters every dock, so those people are counted twice. <code>run_docks.py</code> sums busy minutes against <code>shift_duration</code>. That sum caught PJ04 at 506.5 and PJ08 at 504.7 on the prefer-jack plan. A total that still fits can overlap on the clock, and the 1.1-minute walk is outside the sum. A roaming crew on one clock is still open.</li>
 </ul>
 
 <h2 id="research">Research basis</h2>
@@ -455,7 +463,10 @@ python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inp
   <tr><td>Truck loads for the sample</td><td><code>order_picking/chunker/build_truck_loads.py</code></td></tr>
   <tr><td>Model, candidates, Held–Karp, fallback</td><td><code>order_picking/chunker/chunk_model.py</code></td></tr>
   <tr><td>Clarke–Wright chunker</td><td><code>order_picking/chunker/chunk_loads.py</code></td></tr>
+  <tr><td>Stock placement before the chunker</td><td><code>order_picking/chunker/allocate_lines.py</code>. Whole pallets stay separate. Matching cases share one line and one walk.</td></tr>
+  <tr><td>Mode caps</td><td><code>order_picking/chunker/mode_profile.py</code></td></tr>
   <tr><td>Picker route and assignment</td><td><code>order_picking/source/order_picking_optimizer.py</code>. The stop, staged release, and minute-sum screen are in <a href="order_picking_model.html">order_picking_model.html</a></td></tr>
+  <tr><td>Task sheet</td><td><code>order_picking/source/task_sheet.py</code>. Stop times are in <a href="order_picking_model.html#sheet">order_picking_model.html</a></td></tr>
   <tr><td>Both docks, then the minute-sum screen</td><td><code>order_picking/source/run_docks.py</code></td></tr>
   <tr><td>Full formulation</td><td><code>order_picking/chunker/formulation.md</code></td></tr>
   <tr><td>Whole-order cost note</td><td><code>order_picking/chunker/order_whole_cost_memo.md</code></td></tr>

@@ -202,6 +202,7 @@
   <a href="#staged">Staged release</a>
   <a href="#gap">Stopping gap</a>
   <a href="#docks">Two docks</a>
+  <a href="#sheet">Task sheet and staging</a>
   <a href="#example">Worked numbers</a>
   <a href="#config">Crew and wave settings</a>
   <a href="#outside">Outside this model</a>
@@ -556,11 +557,16 @@ x_{ij} \in \{0,1\}
 \iff
 \begin{cases}
 \text{the order names no equipment, or it matches picker } r \\
+\text{the job names no mode, the picker lists none, or every named mode is listed} \\
 W_o \le W_r^{\max} \\
 V_o \le V_r^{\max} \text{ when both volumes are present}
 \end{cases}
 \]
 </div>
+<p>
+  <code>pick_mode</code> on the job and <code>allowed_modes</code> on the picker are optional. A blank on either side allows the pair. A named mode must sit in the picker’s semicolon-separated list. The strings are <code>bulk</code> and <code>pickface</code>.
+  <code>run_docks.py</code> drops a picker whose <code>home_depot</code> names another dock before the solve. A blank home stays in every dock. The single-dock optimizer uses the picker file it is given.
+</p>
 <p>
   If \(E\) contains no picker for order \(o\), then \(y_o\) is forced to \(0\). The result tags that order <code>no_eligible_picker</code>.
   An order that is eligible but left at \(y_o = 0\) is tagged <code>shift_time_limit_or_priority_tradeoff</code>.
@@ -791,8 +797,8 @@ w_{\min} = \min \{ w_o : w_o &gt; 0 \}
 
 <h2 id="docks">Two docks</h2>
 <p>
-  Each picker call takes one <code>depot_id</code> and sees every picker in the file.
-  <code>python source/run_docks.py</code> solves each depot folder, writes that dock’s utilisation from <code>shift_duration</code>, then sums busy minutes and compares the sum with that shift.
+  Each picker call takes one <code>depot_id</code>. A named <code>home_depot</code> is filtered first, so that picker stays on one dock. A blank home, and a file with no home column, still enters every dock.
+  <code>python source/run_docks.py</code> solves each depot folder, writes that dock’s utilisation from the minutes left on <code>shift_duration</code>, then sums busy minutes and compares the sum with that shift. A blank <code>non_pick_minutes</code> leaves the full shift.
   A picker more than \(0.0001\) minute past the shift raises. The 2026-10-21 prefer-jack plan is that case: PJ04 at \(506.5\) minutes and PJ08 at \(504.7\), against \(480\).
   A pass is the minute total. Clock overlap, and the \(1.1\)-minute walk between docks \(72\) m apart at speed \(65\), stay outside the screen. The check does not rebuild the assignment.
   Files that were already written can be checked with <code>python source/assignment_reports.py</code> and one <code>utilisation.csv</code> per dock.
@@ -800,6 +806,20 @@ w_{\min} = \min \{ w_o : w_o &gt; 0 \}
 <pre><code>python source/run_docks.py --by-depot outputs/chunk_model/by_depot --pickers inputs/layout_warehouse/pickers.csv --travel inputs/layout_warehouse/travel_times.csv --out outputs/chunk_assign/docks --lateness-weight 1 --time-limit 60</code></pre>
 <p class="note">
   Add <code>--staged-assignment</code> for the five-stage release. The single-dock optimizer is still <code>python source/order_picking_optimizer.py</code> with one <code>--depot</code>.
+</p>
+
+<h2 id="sheet">Task sheet and staging</h2>
+<p class="lede">
+  <code>source/task_sheet.py</code> writes one row per stop, in the item-file order, after the docks are solved. It does not rebuild the tour.
+</p>
+<p>
+  The CSV header is the column row. With a travel table and a depot, each stop is the walk from the previous place plus that line’s pick time, and the clock starts at the job start. The walk back to the dock is outside the sheet, and so is the chunker’s job overhead, so the last stop can finish before the job finish. Without both files the time cells are blank. Passing only one raises <code>Pass a travel table and a depot together, or neither.</code>
+</p>
+<div class="ex">
+  Depot <code>D</code>, job start at minute 0. Three minutes to <code>L1</code> and one minute to pick, then eight minutes to <code>L2</code> and two minutes to pick. The stops start at 3 and 12 and finish at 4 and 14.
+</div>
+<p>
+  <code>run_docks.py</code> prints a staging peak for every dock. It writes <code>staging.csv</code> only for a dock that has a capacity. <code>--staging-buffer</code> defaults to 30 minutes after the deadline. <code>--lead-times</code> replaces that buffer with the one-pallet sum of the lead-time steps. A whole pallet peak is an integer. A fractional peak stays a float. <code>--fail-on-staging-overflow</code> raises after the docks are written. With no capacity the peak is printed and the file is left unwritten. The peak is a report. The assignment is unchanged.
 </p>
 
 <h2 id="example">Worked numbers from the two-aisle map</h2>
@@ -839,7 +859,7 @@ w_{\min} = \min \{ w_o : w_o &gt; 0 \}
   <li>A \(z\) edge or a separate stop for the left and right rack. Upper levels and awkward slots are \(r_j\).</li>
   <li>Item handling inside \(T_{ij}\). That handling is \(p_o\).</li>
   <li>A ranking that clears every higher weight before any lower weight. <code>--staged-assignment</code> is must-ship count, then the other jobs by weight, then lateness. The default remains one weighted sum, and must-ship stays the finite weight \(10^{5}\) inside that sum.</li>
-  <li>One model that assigns both docks together, a loading sequence, a cap on pallets waiting at the dock, aisle congestion, a stock check, and a mid-shift re-plan. <code>run_docks.py</code> sums busy minutes after the two solves. A pass is that total.</li>
+  <li>A joint two-dock assignment, a loading sequence, aisle congestion, and a mid-shift re-plan. Dock pallet capacity is the post-solve staging report. The picker has no stock check. <code>allocate_lines.py</code> places demand before the chunker when a stock file is supplied. <code>run_docks.py</code> sums busy minutes after the two solves. A pass is that total.</li>
 </ul>
 
 <h2 id="plots">How to visualize</h2>
@@ -984,7 +1004,9 @@ plot_shift_gantt(result, pickers, out="gantt.png")</code></pre>
   <tr><td>The same model minimized with negated weights, and the relative-gap denominator \(U\)</td><td><code>order_picking/source/order_picking_highs.py</code></td></tr>
   <tr><td>Tenth-of-a-job stop, <code>stop</code>, and the minute-sum screen</td><td><code>order_picking/source/assignment_reports.py</code></td></tr>
   <tr><td>Staged release and <code>--require-must-ship</code></td><td><code>solve_order_assignment</code> in <code>order_picking/source/order_picking_optimizer.py</code></td></tr>
-  <tr><td>Both docks, then the minute-sum screen</td><td><code>order_picking/source/run_docks.py</code></td></tr>
+  <tr><td>Both docks, then the minute-sum screen</td><td><code>order_picking/source/run_docks.py</code>. A named <code>home_depot</code> is applied here, before the solve</td></tr>
+  <tr><td>Task-sheet stop times</td><td><code>order_picking/source/task_sheet.py</code></td></tr>
+  <tr><td>Staging peak</td><td><code>staging_peaks</code> in <code>order_picking/source/assignment_reports.py</code>, written by <code>run_docks.py</code> when a capacity is set</td></tr>
   <tr><td>Prose form of constraints C1–C9</td><td><code>order_picking/source/order_picking_planning_optimizer_spec.md</code></td></tr>
   <tr><td>Route arrows, the floor picture, the shift Gantt, and the two HTML pages</td><td><code>order_picking/visualizer/plot_picking.py</code> and <code>order_picking/visualizer/html_picking.py</code> (<code>order_picking/visualizer/warehouse.html</code>, <code>assignment.html</code>). The walk geometry is <code>route_legs</code> in <code>build_travel_matrix.py</code></td></tr>
 </table>
@@ -992,7 +1014,7 @@ plot_shift_gantt(result, pickers, out="gantt.png")</code></pre>
 </main>
 </div>
 <footer>
-  Order picking model. Travel times in minutes when speed is distance per minute. Phase 2 default solver is HiGHS. The stop is a tenth of the smallest positive weight. A dock pass is the summed busy minutes. Updated 2026-10-21.
+  Order picking model. Travel times in minutes when speed is distance per minute. Phase 2 default solver is HiGHS. The stop is a tenth of the smallest positive weight. A dock pass is the summed busy minutes. Updated 2026-10-29.
 </footer>
 </body>
 </html>
