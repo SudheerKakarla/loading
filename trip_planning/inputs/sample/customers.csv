@@ -1,0 +1,6 @@
+ship_to,province,group,service,sla_days,name
+C100,Bangkok,FOOD,FTL,2,Alpha
+C200,Bangkok,FOOD,LTL,2,Beta
+C300,Chiang Mai,GEN,LTL,5,Gamma
+C400,Bangkok,FOOD,FTL,2,Delta
+C500,Bangkok,FOOD,LTL,1,Epsilon

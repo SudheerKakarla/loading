@@ -1,0 +1,4 @@
+trip_id,ship_date,truck_type,n_trucks,n_drops,cases,kg,m3,util_kg,util_m3,cost,price_basis,shipment_ids
+T001,2025-08-02,case,0,1,2.0,100.0,0.2,,,24.0,case,shp_C500_2025-08-02
+T002,2025-08-05,4W,1,2,30.0,1200.0,3.0,0.8,0.75,1050.0,truck,shp_C100_2025-08-05;shp_C200_2025-08-05
+T003,2025-08-05,case,0,1,6.0,220.0,0.6,,,90.0,case,shp_C300_2025-08-05

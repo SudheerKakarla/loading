@@ -1,0 +1,5 @@
+order_id,shipment_id,category,reason,cases,kg,m3
+O7,shp_C200_2025-08-08,business,past_due,4.0,100.0,0.2
+O6,,data_quality,no_master_customer,2.0,50.0,0.1
+O4,,data_quality,no_rate,3.0,100.0,0.2
+O5,,data_quality,zero_quantity,0.0,0.0,0.0

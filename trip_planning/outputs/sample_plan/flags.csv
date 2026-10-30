@@ -1,0 +1,8 @@
+flag,key,detail
+capacity_suspicious,6W,0.005000 m3/kg is 1.88x 4W; 0.005000 m3/kg is 2.14x 10W
+multidrop_priced_as_max_trip,C300,multidrop remark; trip price is the max trip rate
+rdd_tighter_than_sla,O3,lead 4d < sla 5d
+rdd_tighter_than_sla,O7,lead -2d < sla 2d
+rdd_tighter_than_sla,O9,lead 1d < sla 5d
+service_conflict,C500,customer LTL vs rate card FTL; customer service is used
+truck_without_capacity,18W,capacity_kg or capacity_m3 is blank; truck type is not used

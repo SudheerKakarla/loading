@@ -1,0 +1,5 @@
+ship_to,trip_4w,trip_6w,trip_10w,trip_18w,handling_4w,handling_6w,handling_10w,handling_18w,ltl_mt,ltl_gt,multidrop,service
+C100,1000,1800,3000,,50,,,,,,,
+C200,900,1600,2800,,,,,,8,,,
+C300,1200,2000,,,,,,,,15,yes,
+C500,1100,,,,,,,,12,,,FTL
