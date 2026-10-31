@@ -135,7 +135,9 @@ def test_tie_break_prefers_fewer_early_days_and_loses_to_one_baht():
 
 def test_fleet_limit_leaves_the_dearer_shipment():
     # Each load is 800 kg, so the two do not fit one 4W (1,500). No 6W is offered.
-    # Solos cost 100 and 80. max_trucks=1 keeps the 80 and marks the other fleet_limit.
+    # Solos cost 100 and 80. max_early_days=0 leaves only 5 Aug open, so one truck
+    # that day keeps the 80 and marks the other fleet_limit. A one-day early window
+    # would also open 4 Aug and the daily cap could carry both.
     result = _run(
         [
             order("A1", "A", "2025-08-01", "2025-08-05", 1, 800, 1),
@@ -143,7 +145,7 @@ def test_fleet_limit_leaves_the_dearer_shipment():
         ],
         [customer("A"), customer("B")],
         [rate("A", trip_4w=100), rate("B", trip_4w=80)],
-        settings=cfg(max_trucks=1, time_limit_s=30),
+        settings=cfg(max_trucks=1, max_early_days=0, time_limit_s=30),
         truck_rows=trucks({"truck_type": "4W", "capacity_kg": 1500, "capacity_m3": 4}),
     )
     assert result.ok

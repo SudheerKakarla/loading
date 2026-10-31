@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trip planning: end to end</title>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["$", "$"], ["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"]],
+        tags: "ams"
+      },
+      options: { skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"] }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2330;
+      --ink: #e8eef5;
+      --muted: #9aa8b8;
+      --line: #2c3a4d;
+      --gold: #d4a017;
+      --ok: #3d9b6e;
+      --warn: #d9822b;
+      --chip: #243044;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    a { color: #8ec5ff; }
+    header {
+      padding: 2.2rem 1.5rem 1.4rem;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #1a2838 0%, var(--bg) 100%);
+    }
+    header h1 { margin: 0 0 0.35rem; font-size: 1.7rem; font-weight: 650; }
+    header p { margin: 0.35rem 0 0; color: var(--muted); max-width: 54rem; }
+    .layout-page {
+      display: grid;
+      grid-template-columns: 230px 1fr;
+      max-width: 88rem;
+      margin: 0 auto;
+    }
+    nav {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      padding: 1.2rem 1rem 2rem 1.4rem;
+      border-right: 1px solid var(--line);
+      height: 100vh;
+      overflow: auto;
+      font-size: 0.86rem;
+    }
+    nav a { display: block; color: var(--muted); text-decoration: none; padding: 0.22rem 0; }
+    nav a:hover { color: var(--gold); }
+    nav .g {
+      margin-top: 0.85rem;
+      color: var(--gold);
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    main { padding: 1.4rem 1.6rem 4rem; min-width: 0; }
+    h2 { font-size: 1.28rem; margin: 2.1rem 0 0.55rem; }
+    h3 { font-size: 1.05rem; margin: 1.4rem 0 0.4rem; }
+    p, li { color: #c5d0dc; }
+    .lede { color: var(--muted); margin-top: 0; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.7rem;
+      margin: 0.8rem 0 1.1rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.75rem 0.9rem;
+    }
+    .card b { display: block; font-size: 1.35rem; color: var(--gold); }
+    .card span { color: var(--muted); font-size: 0.84rem; }
+    table { border-collapse: collapse; width: 100%; margin: 0.7rem 0 1.1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid var(--line); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+    th { background: var(--chip); color: var(--ink); font-weight: 600; }
+    td { color: #c5d0dc; }
+    td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+    code, pre {
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 0.85em;
+    }
+    code { background: var(--chip); padding: 0.08rem 0.32rem; border-radius: 4px; color: #e8eef5; }
+    pre {
+      background: #0b1017;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.8rem 1rem;
+      overflow: auto;
+      color: #d7e2ee;
+    }
+    .note, .warn, .ok {
+      border-left: 4px solid var(--gold);
+      background: var(--panel);
+      padding: 0.6rem 0.9rem;
+      border-radius: 0 8px 8px 0;
+      margin: 0.9rem 0;
+      color: #c5d0dc;
+    }
+    .warn { border-left-color: var(--warn); }
+    .ok { border-left-color: var(--ok); }
+    .chip {
+      display: inline-block;
+      background: var(--chip);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.05rem 0.6rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-right: 0.3rem;
+    }
+    .assume { color: var(--warn); font-weight: 600; font-size: 0.78rem; }
+    svg { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin: 0.6rem 0 1rem; }
+    svg text { fill: #e8eef5; }
+    svg .m { fill: #9aa8b8; }
+    footer { border-top: 1px solid var(--line); padding: 1rem 1.6rem; color: var(--muted); font-size: 0.82rem; }
+    @media (max-width: 900px) {
+      .layout-page { grid-template-columns: 1fr; }
+      nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Trip planning: from orders to validated freight bookings</h1>
+  <p>Current implementation snapshot: <b>31 October 2026</b>. A standalone module next to <code>loadmax/</code>. It chooses solo/shared bookings and dates under capacity and arrival rules, with optional permissions, dated/weekly calendars, approved RDD overrides and named what-if runs. With a fleet cap, serving more shipments comes first; freight cost and bounded preferences come next. This describes implemented software scope, not approved operational policies.</p>
+</header>
+
+<div class="layout-page">
+<nav>
+  <div class="g">Overview</div>
+  <a href="#problem">The problem</a>
+  <a href="#glossary">Glossary of terms</a>
+  <a href="#path">End to end</a>
+  <div class="g">Data</div>
+  <a href="#inputs">Inputs</a>
+  <a href="#retrospective">Optional retrospective contracts</a>
+  <a href="#shipments">Shipments and exclusions</a>
+  <a href="#workbook">Workbook sheets and gaps</a>
+  <div class="g">Logic</div>
+  <a href="#pricing">Pricing rules</a>
+  <a href="#example">Worked example</a>
+  <a href="#candidates">Candidate trips</a>
+  <a href="#model">The model</a>
+  <a href="#solve">Solving</a>
+  <a href="#settings">Settings and defaults</a>
+  <div class="g">Results</div>
+  <a href="#outputs">Outputs</a>
+  <a href="#scenarios">Named what-if scenarios</a>
+  <a href="#results">August 2025 results</a>
+  <a href="#excel">Versus the Excel</a>
+  <div class="g">Project</div>
+  <a href="#assumptions">Assumptions</a>
+  <a href="#pending">What is still pending</a>
+  <a href="#code">Code map and tests</a>
+  <a href="#run">How to run</a>
+  <a href="#limits">Limits</a>
+</nav>
+
+<main>
+<p class="note">Formulas use MathJax and need network access to render. Rules marked <span class="assume">ASSUMPTION</span> need business approval. Some choices are configurable; alternative commercial pricing formulas are not implemented settings. The detailed implementation contract is <a href="specification.md">specification.md</a>. August figures are dataset-specific reference results, not planner constants.</p>
+
+<h2 id="problem">The problem</h2>
+<p class="lede">Customers order cases for a required delivery date (RDD). The planner books trucks. Booking one truck per customer is simple but wasteful: trucks leave half empty and each trip pays a full rate.</p>
+<ul>
+  <li>Each order belongs to a <b>ship-to</b> (a delivery point, such as one store or distribution centre) and has an <b>RDD</b> (required delivery date), a hard deadline.</li>
+  <li>Each ship-to is served either as <b>FTL</b> (full truck load: the customer pays per truck trip) or <b>LTL</b> (less than truck load: the customer may pay per case instead of per truck).</li>
+  <li>Trucks come in types <b>4W, 6W, 10W</b>, named by wheel count (4-wheel, 6-wheel, 10-wheel; an 18-wheel type, 18W, is priced on the rate card but has no capacity in the workbook). Capacity is two numbers, kilograms (kg) and cubic metres (m&sup3;), and both must hold. The 4W, 6W and 10W capacities come from the Type / KG / M3 table on the workbook's <code>Pivot_Summary</code> sheet, not from the VA05 order sheet.</li>
+  <li>Prices come from a rate card per ship-to: a trip rate per truck type, an optional handling charge (unloading), and for LTL customers a price per case.</li>
+  <li>Goal: cover eligible shipments with a calendar-open legal date exactly once, or report past-due/calendar-unavailable demand and fleet-cap leftovers. The capped objective minimizes leftover <b>shipment count</b> first, then freight plus bounded early-delivery/LTL-upgrade preferences. Excluded demand remains reconciled, not costed as delivered.</li>
+</ul>
+<div class="cards">
+  <div class="card"><b>1,436</b><span>orders in the August 2025 VA05 workbook (an SAP sales-order report)</span></div>
+  <div class="card"><b>329</b><span>shipments planned (ship-to + required delivery date)</span></div>
+  <div class="card"><b>14.0%</b><span>cheaper than the one-shipment-per-booking baseline</span></div>
+  <div class="card"><b>Gap 0</b><span>saved August solve: optimal over generated candidates; runtime is machine-dependent</span></div>
+</div>
+
+<h2 id="glossary">Glossary of terms</h2>
+<div class="note"><b>Delivered versus pending:</b> the core planner, customer permissions, approved-date audit, dated/weekly calendars, missing-rate reporting and named scenarios are implemented. They preserve default August results; they do not supply approved business rules. The complete five-scenario August batch has not yet been run. See <a href="#pending">pending data, decisions and software extensions</a>.</div>
+<p class="lede">Every abbreviation and technical word used on this page. Each is also spelled out where it first appears.</p>
+
+<h3>Business terms</h3>
+<table>
+  <tr><th>Term</th><th>Stands for</th><th>Meaning here</th></tr>
+  <tr><td><b>RDD</b></td><td>Required Delivery Date</td><td>The date by which an order must arrive. A hard deadline: the plan never delivers after it.</td></tr>
+  <tr><td><b>FTL</b></td><td>Full Truck Load</td><td>Service where the customer is charged per truck trip, whatever the load.</td></tr>
+  <tr><td><b>LTL</b></td><td>Less Than (full) Truck Load</td><td>Service where a small load may be charged per case instead of per truck. The planner takes the cheaper of the two (an assumption, see the last sections).</td></tr>
+  <tr><td><b>MT</b></td><td>Modern Trade</td><td>Large retail chains. One of the two per-case rate columns on the rate card (<code>ltl_mt</code>).</td></tr>
+  <tr><td><b>GT</b></td><td>General Trade</td><td>Smaller independent shops and wholesalers. The other per-case rate column (<code>ltl_gt</code>). If a ship-to has both, MT is used.</td></tr>
+  <tr><td><b>4W, 6W, 10W, 18W</b></td><td>4-, 6-, 10-, 18-wheel truck</td><td>Truck types. August 18W has rates but no usable capacity, so it is excluded by default. It can be considered with explicitly supplied positive kg/m³ capacities and an offered destination rate; it is not hardcoded off.</td></tr>
+  <tr><td><b>SLA</b></td><td>Service Level Agreement</td><td>The delivery lead time promised to a customer, for example <b>D+1</b> means delivery one day after the order date and <b>D+2</b> means two days.</td></tr>
+  <tr><td><b>Ship-to</b></td><td>&nbsp;</td><td>A delivery point (a store or distribution centre), identified by a code.</td></tr>
+  <tr><td><b>Order</b></td><td>&nbsp;</td><td>One sales document on one RDD, from the workbook.</td></tr>
+  <tr><td><b>Shipment</b></td><td>&nbsp;</td><td>All orders for one ship-to with the same RDD. The unit that is planned.</td></tr>
+  <tr><td><b>Booking / report trip</b></td><td>&nbsp;</td><td>One selected candidate on one date. A shared booking uses one truck; a solo booking may be several trucks or a case-priced carrier booking. A report row is not a physical vehicle.</td></tr>
+  <tr><td><b>Drop</b></td><td>&nbsp;</td><td>One delivery stop. A trip with 3 ship-tos has 3 drops.</td></tr>
+  <tr><td><b>Multi-drop</b></td><td>&nbsp;</td><td>A trip that delivers to more than one ship-to. Also the name of a special pricing remark on 35 Foodland and Donki (retail chain) ship-tos.</td></tr>
+  <tr><td><b>Handling</b></td><td>&nbsp;</td><td>An extra unloading charge some ship-tos add, per truck type.</td></tr>
+  <tr><td><b>Rate card</b></td><td>&nbsp;</td><td>The price list per ship-to: trip rate per truck type, handling, and per-case rates. In the workbook it is the sheet <code>TPT Rate Card</code>; <b>TPT</b> is the workbook's own prefix for its transport (freight) rates.</td></tr>
+  <tr><td><b>Master Customer</b></td><td>&nbsp;</td><td>The workbook sheet listing each ship-to's province, customer group, service type and SLA.</td></tr>
+  <tr><td><b>THB</b></td><td>Thai Baht</td><td>The currency of every cost on this page.</td></tr>
+  <tr><td><b>kg, m&sup3;</b></td><td>kilogram, cubic metre</td><td>The two capacity measures of a truck. A load fits only if it is within both.</td></tr>
+  <tr><td><b>VA05</b></td><td>an SAP report code</td><td>The sales-order list exported from SAP. Also the name of the workbook sheet that holds those lines.</td></tr>
+  <tr><td><b>SAP</b></td><td>&nbsp;</td><td>The company's enterprise resource planning system, where orders are entered.</td></tr>
+  <tr><td><b>PO</b></td><td>Purchase Order</td><td>The customer's own order number. It is carried to the trip and exclusion reports but is not used in planning.</td></tr>
+  <tr><td><b>EDI</b></td><td>Electronic Data Interchange</td><td>Purchase orders that retailers send to the company as data files, before they are entered in SAP. Two workbook sheets hold samples.</td></tr>
+  <tr><td><b>SKU</b></td><td>Stock Keeping Unit</td><td>A product code. The Product Master sheet has one row per SKU.</td></tr>
+  <tr><td><b>GI Date</b></td><td>Goods Issue Date</td><td>An SAP column: the day the goods leave the warehouse. The closest thing in VA05 to a planned ship date.</td></tr>
+  <tr><td><b>Pallet</b></td><td>&nbsp;</td><td>A wooden base that cases are stacked on for loading. A truck has a limited number of pallet positions. The planner does not check this yet.</td></tr>
+</table>
+
+<h3>Planning and model terms</h3>
+<table>
+  <tr><th>Term</th><th>Stands for</th><th>Meaning here</th></tr>
+  <tr><td><b>MIP</b></td><td>Mixed-Integer Program</td><td>An optimization problem in which some decisions are whole numbers, here yes/no choices. A solver finds the lowest-cost answer that obeys every rule.</td></tr>
+  <tr><td><b>Set partitioning</b></td><td>&nbsp;</td><td>A MIP pattern: choose some pre-built groups so that every item is in exactly one chosen group. Here the items are shipments and the groups are candidate trips.</td></tr>
+  <tr><td><b>Candidate</b></td><td>&nbsp;</td><td>One possible trip that the optimizer may choose: either one shipment alone or a few that share a truck.</td></tr>
+  <tr><td><b>Solo</b></td><td>&nbsp;</td><td>A shipment sent on its own, with its cheapest trucks or its per-case price.</td></tr>
+  <tr><td><b>Rider</b></td><td>&nbsp;</td><td>An LTL shipment in a truck-priced booking with FTL. It has no separate case bill, but its destination can still increase the maximum trip rate or handling.</td></tr>
+  <tr><td><b>Baseline</b></td><td>&nbsp;</td><td>The cost if every shipment went alone, each at the cheaper of its truck and per-case price. The plan is judged against it.</td></tr>
+  <tr><td><b>Sheet rule</b></td><td>&nbsp;</td><td>How the workbook's <code>Pivot_Summary</code> sheet picks a truck (column <code>EST Truck Usage</code>): the smallest single truck that fits both kg and m&sup3;, otherwise several 6W. Every ship-to gets its own truck, with no sharing. Used as a second comparison point.</td></tr>
+  <tr><td><b>Dominance pruning</b></td><td>&nbsp;</td><td>Without a fleet cap, drop shared candidates that do not save against solos. With a cap, retain non-saving sharing and cost/truck alternatives because they may improve coverage.</td></tr>
+  <tr><td><b>Tie-break</b></td><td>&nbsp;</td><td>A bounded preference under 1 THB in total, such as fewer early days. It can outweigh a fractional-baht cost difference, not a full baht.</td></tr>
+  <tr><td><b>Penalty</b></td><td>&nbsp;</td><td>A cost bound making one fewer unplanned shipment preferable in a proven solve. A timeout/fallback may not achieve maximum coverage.</td></tr>
+  <tr><td><b>Gap (MIP gap)</b></td><td>&nbsp;</td><td>How far the solver's answer may be from the proven best possible answer. A gap of 0 means the answer is proven optimal.</td></tr>
+  <tr><td><b>Optimal</b></td><td>&nbsp;</td><td>Proven best objective over generated candidates and their supplied prices, not a proof over all possible routes, physical packings or commercial contracts.</td></tr>
+  <tr><td><b>Incumbent</b></td><td>&nbsp;</td><td>The best plan the solver has found so far, which is used if it runs out of time.</td></tr>
+  <tr><td><b>Component</b></td><td>&nbsp;</td><td>A group of shipments linked by shared candidates. Components do not affect each other, so each is solved on its own.</td></tr>
+  <tr><td><b>Utilization</b></td><td>&nbsp;</td><td>How full a truck is: load divided by capacity, by weight and by volume.</td></tr>
+  <tr><td><b>Reconciliation</b></td><td>&nbsp;</td><td>Checking that planned plus excluded quantities equal what was ordered.</td></tr>
+  <tr><td><b>HiGHS</b></td><td>&nbsp;</td><td>The open-source optimization solver used to solve the MIP, called through SciPy's <code>milp</code> function.</td></tr>
+</table>
+
+<h3>Technical terms</h3>
+<table>
+  <tr><th>Term</th><th>Stands for</th><th>Meaning here</th></tr>
+  <tr><td><b>CSV</b></td><td>Comma-Separated Values</td><td>A plain text table file that opens in Excel. Planner tables are CSV; configuration is YAML/JSON and run metadata is JSON.</td></tr>
+  <tr><td><b>CLI</b></td><td>Command-Line Interface</td><td>A program you run by typing a command, such as <code>plan_trips.py</code>.</td></tr>
+  <tr><td><b>I/O</b></td><td>Input / Output</td><td>Reading or writing files. The pricing code does none, so it is easy to test.</td></tr>
+  <tr><td><b>MathJax</b></td><td>&nbsp;</td><td>The web library that draws the formulas on this page.</td></tr>
+  <tr><td><b>Assumption</b></td><td>&nbsp;</td><td>An implemented business rule awaiting approval. Only some choices have settings; a different tariff formula needs an approved code change.</td></tr>
+</table>
+
+<h2 id="path">End to end</h2>
+<svg viewBox="0 0 900 270" width="100%" role="img" aria-label="Pipeline from workbook to plan" font-family="Segoe UI, sans-serif" font-size="13">
+  <defs>
+    <marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#9aa8b8"/></marker>
+  </defs>
+  <g stroke="#2c3a4d" fill="#243044">
+    <rect x="10" y="20" width="150" height="56" rx="8"/>
+    <rect x="195" y="20" width="150" height="56" rx="8"/>
+    <rect x="380" y="20" width="150" height="56" rx="8"/>
+    <rect x="565" y="20" width="150" height="56" rx="8"/>
+    <rect x="750" y="20" width="140" height="56" rx="8"/>
+    <rect x="195" y="170" width="150" height="56" rx="8"/>
+    <rect x="380" y="170" width="150" height="56" rx="8"/>
+    <rect x="565" y="170" width="150" height="56" rx="8"/>
+    <rect x="750" y="170" width="140" height="56" rx="8"/>
+  </g>
+  <g text-anchor="middle">
+    <text x="85" y="44">VA05 workbook</text><text class="m" x="85" y="62">.xlsx, manual tool</text>
+    <text x="270" y="44">va05_adapter</text><text class="m" x="270" y="62">clean tables</text>
+    <text x="455" y="44">4 input CSVs</text><text class="m" x="455" y="62">the contract</text>
+    <text x="640" y="44">shipments</text><text class="m" x="640" y="62">ship-to + RDD</text>
+    <text x="820" y="44">pricing</text><text class="m" x="820" y="62">truck / case</text>
+    <text x="820" y="194">candidates</text><text class="m" x="820" y="212">who can share</text>
+    <text x="640" y="194">trip_model</text><text class="m" x="640" y="212">HiGHS MIP</text>
+    <text x="455" y="194">reporting</text><text class="m" x="455" y="212">checks + files</text>
+    <text x="270" y="194">bookings + savings</text><text class="m" x="270" y="212">10 CSVs + metadata JSON</text>
+  </g>
+  <g stroke="#9aa8b8" stroke-width="1.6" fill="none" marker-end="url(#ar)">
+    <path d="M160 48 H193"/><path d="M345 48 H378"/><path d="M530 48 H563"/><path d="M715 48 H748"/>
+    <path d="M820 76 V168"/>
+    <path d="M750 198 H717"/><path d="M565 198 H532"/><path d="M380 198 H347"/>
+  </g>
+  <text class="m" x="450" y="130" text-anchor="middle">Excel in, plan out. Every order ends in exactly one trip or one exclusion with a reason code.</text>
+</svg>
+
+<table>
+  <tr><th>Step</th><th>What happens</th><th>File</th></tr>
+  <tr><td>1. Read</td><td>Four sheets of the planner's workbook become clean tables.</td><td><code>va05_adapter.py</code>, <code>build_inputs.py</code></td></tr>
+  <tr><td>2. Group</td><td>Validate required data; fail on corrupt input. Set aside ineligible orders with a reason, then group remaining orders by ship-to/RDD.</td><td><code>shipments.py</code></td></tr>
+  <tr><td>3. Price</td><td>Each shipment gets a solo price. Any group of shipments can be priced on one truck.</td><td><code>pricing.py</code>, <code>baseline_cost.py</code></td></tr>
+  <tr><td>4. Enumerate</td><td>List legal solos/shared bookings. Only without a fleet cap, prune shared bookings that do not save money.</td><td><code>candidates.py</code></td></tr>
+  <tr><td>5. Solve</td><td>A set-partitioning MIP (mixed-integer program) picks the cheapest cover.</td><td><code>trip_model.py</code></td></tr>
+  <tr><td>6. Report</td><td>Hard-rule checks, reconciliation, and the output files.</td><td><code>reporting.py</code>, <code>plan_trips.py</code></td></tr>
+</table>
+
+<h2 id="inputs">Inputs</h2>
+<p>The VA05 workbook (the SAP sales-order export, with extra sheets) is the planner's manual tool. The adapter reads four sheets with cached cell values (so the workbook must be saved by Excel with formulas calculated) and writes four CSV (comma-separated text) files, which are the planner's input contract.</p>
+<table>
+  <tr><th>Sheet</th><th>Becomes</th><th>Key columns</th></tr>
+  <tr><td>VA05 (SAP order lines)</td><td><code>orders.csv</code></td><td><code>order_id, ship_to, doc_date, rdd, cases, weight_kg, volume_m3</code>, optional <code>po_numbers</code> (PO = purchase order number, carried to the reports only)</td></tr>
+  <tr><td>Master Customer</td><td><code>customers.csv</code></td><td><code>ship_to, province, group, service, sla_days</code> (SLA lead time in days), <code>name</code></td></tr>
+  <tr><td>TPT Rate Card (transport rates)</td><td><code>rates.csv</code></td><td><code>trip_4w/6w/10w/18w</code> (price per truck trip), <code>handling_*</code> (unloading charge), <code>ltl_mt</code> / <code>ltl_gt</code> (per-case price for modern / general trade), <code>multidrop</code> (multi-drop pricing remark), <code>service</code> (FTL or LTL)</td></tr>
+  <tr><td>Pivot_Summary truck table</td><td><code>trucks.csv</code></td><td><code>truck_type, capacity_kg, capacity_m3</code></td></tr>
+</table>
+<ul>
+  <li>Quantity is <code>Total CTN Convert</code>, derived by the workbook from confirmed quantity. A document with lines on two delivery dates becomes two orders, <code>&lt;document&gt;@&lt;date&gt;</code>.</li>
+  <li>A trip rate of 0 means the truck is not offered. It becomes blank.</li>
+  <li>Workbook service uses nonblank rate-card contract service before Master Customer and preserves the original conflict. For direct CSV inputs, nonblank <code>customers.service</code> wins over <code>rates.service</code>; unknown/missing service resolves to FTL. A customer/rate conflict is flagged. The "FTL" text in a LoadMax order number is a route label and is not used.</li>
+  <li>August truck capacities (kg = kilograms, m&sup3; = cubic metres), read from <code>Pivot_Summary</code>: 4W 1,500 kg / 4 m&sup3;, 6W 5,000 kg / 25 m&sup3;, 10W 15,000 kg / 35 m&sup3;. 18W is missing and flagged/unusable by default; direct inputs or explicit scenario capacities can enable it where a destination rate is offered. The 6W volume is suspicious, not proven wrong; retain it pending confirmation.</li>
+</ul>
+<div class="warn">The 6W (6-wheel truck) volume of 25 m³ looks too high next to its 5,000 kg (the 4W gets 4 m³ for 1,500 kg). It is kept as given and flagged <code>capacity_suspicious</code> in every run.</div>
+
+<h3 id="retrospective">Optional retrospective contracts (implemented)</h3>
+<p>All files are UTF-8 header-row CSVs, discovered beside the four required inputs. These are technical contracts, <b>not real customer policies</b>. Missing optional inputs preserve the August defaults. No existing sample/August input policy is populated automatically.</p>
+<table>
+  <tr><th>Input</th><th>Schema and validation</th><th>Effect</th></tr>
+  <tr><td>Optional columns in <code>customers.csv</code></td><td><code>allow_truck_pricing, allow_case_pricing, allow_sharing</code>. Missing/empty = true (legacy behavior). Accept booleans and trimmed case-insensitive strings <code>true/false/1/0</code>; other strings and native numeric values fail.</td><td>Restrictions only: FTL stays truck-only, no permission invents a rate. LTL can use an actually priced permitted branch. Sharing denial beats pair allow and applies between shipments, including the same ship-to; orders within one grouped shipment remain one planning unit.</td></tr>
+  <tr><td><code>planning_calendar.csv</code></td><td><code>calendar_type,date,is_open,ship_to</code>. Type dispatch/receiving; dispatch ship-to blank, receiving blank (global) or a known normalized customer id from the whole customer table. ISO <code>YYYY-MM-DD</code>; strict boolean as above, but blank fails. Duplicate normalized type/ship-to/date keys fail even when identical.</td><td>Dated exceptions. <b>Blank receiving scope is now global</b>, extending the old dated contract. Dispatch filters departure; receiving filters each member's arrival (departure + province transit), including case-priced solos.</td></tr>
+  <tr><td><code>weekly_calendar.csv</code></td><td><code>calendar_type,ship_to,weekday,is_open,start_date,end_date</code>. Same scope/boolean rules. Full weekday Monday through Sunday, trimmed/case-insensitive; no numbers/abbreviations. Both dates mandatory strict ISO (native date objects in memory), inclusive, start ≤ end. Overlapping ranges for the same normalized type/scope/weekday fail <b>even with equal booleans</b>.</td><td>Recurring weekly availability within explicit bounds. Receiving precedence: <b>dated specific → dated global → weekly specific → weekly global → open</b>. Dispatch: dated global → weekly global → open. Explicit opens are retained and can reopen weekly closures. Different scopes may overlap.</td></tr>
+  <tr><td><code>delivery_date_overrides.csv</code></td><td><code>order_id,approved_rdd,reason</code>. Unique known normalized order ids against <b>all original orders</b>, including exclusions. Strict ISO date and nonblank reason; malformed/unknown/duplicate rows fail. Header-only schema is a no-op. Native date objects are accepted for optional dates in memory, not datetime objects.</td><td>Apply approved RDDs to a deep copy <b>before grouping</b>, baseline calculation and SLA warnings. Groups may split/merge. Original quantities/releases/dates stay unchanged. Earlier than release gives normal past due. No relaxation without an explicit approval; raw dates must still validate.</td></tr>
+</table>
+<p>Header-only calendar schemas are valid no-ops; missing schemas fail. Calendars only filter existing release/transit/early bounds. No GI/Sunday policy is inferred; transit remains elapsed calendar days, not business days. No approved operational policies have been supplied.</p>
+<p><code>trip_orders.csv</code> and <code>exclusions.csv</code> retain <code>original_rdd,effective_rdd,override_reason</code> for every order, including zero-quantity/no-rate orders. Unoverridden rows have equal dates and blank reason. Plans now write ten CSVs plus JSON; the builder stays at nine CSVs with its old exclusion schema. The software records a supplied approval reason; it does not authenticate approval authority.</p>
+<p>API: <code>plan(orders, customers, rates, trucks, cfg=None, overrides=None, *, planning_calendar=None, delivery_date_overrides=None, weekly_calendar=None)</code>. Optional tables are trailing defaulted fields in <code>InputTables</code>. Direct shipment building accepts approved dates; direct candidate generation accepts an immutable validated <code>PlanningCalendar</code>. No global mutable restriction state is introduced.</p>
+
+<h3>Validation is not exclusion</h3>
+<ul>
+  <li><b>Workbook lines are checked before grouping:</b> missing, malformed, nonfinite, boolean or negative cases/kg/m³ fail the build. Missing document/Ship-to/Sold-to/dates or conflicting Ship-to/Sold-to within one document/RDD also fail. An order retains its latest line document date.</li>
+  <li><b>Direct tables are checked too:</b> required columns, valid dates, unique normalized order/customer/rate/truck keys and finite nonnegative quantities. Blank order/customer keys fail; a missing order ship-to is an eligibility exclusion. Optional missing prices are permitted, but negative/malformed/nonfinite monetary values fail.</li>
+  <li><b>Price semantics:</b> blank/zero trip rate means not offered; blank handling means zero. MT case rate wins if both case rates exist. The workbook adapter converts zero case rates to blank; direct CSV zero case rates remain valid zero prices.</li>
+  <li><b>Publication:</b> fatal validation or serialization failures do not replace a prior build/plan. Ordinary exclusions retain original quantities. Passing validation is not business approval.</li>
+</ul>
+
+<h2 id="shipments">Shipments and exclusions</h2>
+<p>A <b>shipment</b> is all orders for one ship-to with the same RDD (required delivery date). It is the unit that is planned: it is never split across trips (except by its solo fleet, below). Its release date is the latest order document date.</p>
+<p>Some orders cannot be planned. They never reach the optimizer and are listed with exactly one reason:</p>
+<table>
+  <tr><th>Category</th><th>Reason</th><th>Meaning</th><th class="n">August orders</th></tr>
+  <tr><td>Data quality</td><td><code>no_master_customer</code></td><td>Ship-to is blank or missing from the customer table</td><td class="n">0</td></tr>
+  <tr><td>Data quality</td><td><code>zero_quantity</code></td><td>0 cases</td><td class="n">48</td></tr>
+  <tr><td>Data quality</td><td><code>no_rate</code></td><td>Ship-to has no rate-card row</td><td class="n">31</td></tr>
+  <tr><td>Data quality</td><td><code>truck_type_not_offered</code></td><td>No usable truck and no LTL case rate</td><td class="n">0</td></tr>
+  <tr><td>Data quality</td><td><code>service_not_permitted</code></td><td>Explicit pricing restrictions leave no priced permitted route; never reclassifies FTL or invents a rate</td><td class="n">0 (default)</td></tr>
+  <tr><td>Business</td><td><code>past_due</code></td><td>Ship date would fall before the order was released</td><td class="n">0</td></tr>
+  <tr><td>Business</td><td><code>calendar_unavailable</code></td><td>Release/transit/early bounds permit dates, but all are closed; takes precedence over fleet limit, including cap zero</td><td class="n">0 (default)</td></tr>
+  <tr><td>Business</td><td><code>fleet_limit</code></td><td>Dateable leftover under a cap; a timeout/fallback does not prove it cannot be served by a better plan</td><td class="n">0</td></tr>
+</table>
+<p>The 31 <code>no_rate</code> orders are 12,940 cases, <b>10.99% of input cases</b> (13.11% of m³). Rates for those ship-tos are needed. Another 37 orders belong to 20 ship-tos missing from Master Customer. The adapter includes them in the customer contract table; they may be planned when rated and are flagged <code>not_in_master_customer</code>. 57 orders have an RDD tighter than SLA; they are planned as given and flagged <code>rdd_tighter_than_sla</code>. SLA does not constrain dispatch. <code>past_due</code> compares release with RDD minus transit, not today's date: no rolling horizon or frozen bookings are modelled.</p>
+<div class="ok">Reconciliation is enforced, not hoped for: planned cases, kg and m³ plus excluded equal the input totals (117,745 cases, 702,897 kg, 1,841.29 m³). If they do not, the run exits non-zero.</div>
+
+<h2 id="workbook">Workbook sheets: what each gives, and what else would help</h2>
+<p class="lede">The workbook has ten sheets. The planner reads four of them (VA05, Master Customer, TPT Rate Card and the truck table on Pivot_Summary). This section lists what every sheet holds, what the planner takes from it, and what it could still give. Counts are from the August 2025 file.</p>
+<table>
+  <tr><th>Sheet</th><th>What it holds</th><th>Used by the planner</th><th>What else it could give</th></tr>
+  <tr>
+    <td><b>VA05</b></td>
+    <td>9,654 SAP order lines: document, PO (purchase order) number, document date, delivery date (the RDD), sold-to and ship-to, quantities, weight, volume, order status, GI Date (goods issue date), the user who created the order.</td>
+    <td>Document, document date, RDD, ship-to, cases, kg, m&sup3;. The PO number is carried to the reports.</td>
+    <td><b>Status</b> is Completed or Not delivered: per order 1,254 completed, 175 not delivered, 7 mixed. A future live filter needs explicit status/block/rejection rules and mixed-line handling; do not filter retrospective demand automatically.<br><b>GI Date</b> equals RDD on 8,886 lines and is one day earlier on most of the rest. No Sunday GI is an observation, not proof of a recurring closure or that every Sunday-RDD order must ship Saturday. Approved weekly/dated rules can now express actual availability.</td>
+  </tr>
+  <tr>
+    <td><b>Master Customer</b></td>
+    <td>247 rows: sold-to, ship-to, province, segment, group, service type, SLA, order type.</td>
+    <td>Service, SLA (only to flag an RDD tighter than the SLA), province, group, name.</td>
+    <td>Segment and order type are carried through but unused. They could drive customer-specific rules such as priority or never sharing a truck.</td>
+  </tr>
+  <tr>
+    <td><b>TPT Rate Card</b></td>
+    <td>197 ship-tos (57 FTL, 140 LTL): trip price per truck type, handling, per-case price (MT 18, GT 124 ship-tos), contract service, province, customer group, segment (Core 126, Contribute 49, Spike 22), round-trip distance, remarks.</td>
+    <td>Trip prices, handling, case prices, service, province, group, and the multi-drop remark (27 Foodland and 8 Donki ship-tos).</td>
+    <td><b>Distance</b> is copied but unused (see below). <b>Add Case (Only FTL)</b> is 1 on all rows, with ambiguous commercial meaning; no extra charge/rule is inferred.<br>Unloading remarks align with populated 4W handling; the numeric rate columns are used. Other "Add on ..." remarks concern rate provenance. Nine ship-tos say "Deliver to ANT (RAMA II)"; no hub mapping or onward-cost scope is inferred. Missing-rate customers now have a dedicated rollup, but approved rates must still be supplied.</td>
+  </tr>
+  <tr>
+    <td><b>Pivot_Summary</b></td>
+    <td>The truck capacity table; two manual ship-to notes; the average kg (5.35) and m&sup3; (0.0140) per case; a pivot of the 22 Aug orders with the estimated truck and utilization per ship-to; a sales-value check per PO.</td>
+    <td>The capacity table. The estimated-truck rule is reproduced as a comparison point (see <a href="#excel">Versus the Excel</a>).</td>
+    <td>The notes are manual routing rules that are not modelled. Ship-to 109961: "If PO start with 21, deliver to WATSON" (no August PO starts with 21). Ship-to 110611 has a note that could not be interpreted.</td>
+  </tr>
+  <tr>
+    <td><b>Product Master</b></td>
+    <td>2,739 products (SKU = stock keeping unit, a product code): weight, cube, carton size, cases per pallet, shelf life, brand.</td>
+    <td>Only indirectly. The kg and m&sup3; in VA05 are already computed from it: all 9,654 lines match a product, and weight and volume equal cartons times the master value within 1% on 95% of lines.</td>
+    <td>Cases per pallet yield about 1,878 <b>fractional pallet equivalents</b>, not a physical pallet count. 274 lines (2,436 of 117,745 cases, 2%) lack relevant pallet data. Credible pallet constraints need SKU-line retention, rounding/mixing/stackability rules and truck pallet positions. Carton dimensions alone do not prove packing.</td>
+  </tr>
+  <tr>
+    <td><b>OWS.EDI and OWS_EDI</b></td>
+    <td>EDI (electronic data interchange) purchase orders from retailers: PO number, PO date, requested delivery date, note, amount, sender, process time, status. 14 Watson rows from January, and 436 rows from 7 retailers (Big C, Watson, Lotus, Makro, CJ Express, The Mall, Jusco) for POs dated 13 to 22 July.</td>
+    <td>Nothing. None of the 450 PO numbers is in the August VA05, so they cannot be matched to the orders.</td>
+    <td>They show what the customer asked for before the order was entered in SAP, which gives an earlier view of demand and a PO-date to delivery-date lead time. 57 notes read "Delivery Sequence Number = 00", which may hint at a drop order. For August, the matching EDI file is needed.</td>
+  </tr>
+  <tr>
+    <td><b>Summary</b></td>
+    <td>644 rows, but only 23 January orders for Watson are filled in. Columns: plan delivery date (empty), actual delivery date, truck type. Truck type is filled on 3 rows ("6W x 1", "4W x 1", "LTL").</td>
+    <td>Nothing.</td>
+    <td>This looks like the tracking layout planners want. If it were filled for August it would give the real bookings that the comparison lacks. This is the single most useful missing item.</td>
+  </tr>
+  <tr>
+    <td><b>NLM</b></td>
+    <td>30 July rows for one customer (North Line Marketing, Chiang Mai, as the rows read), with an "Adjust Del Date" column.</td>
+    <td>Nothing.</td>
+    <td>Approved date overrides are now implemented before grouping, with original/effective dates and reason. NLM adjustments are evidence that such a capability is useful, not automatic approvals to import.</td>
+  </tr>
+  <tr>
+    <td><b>Sheet1</b></td>
+    <td>8 rows: product code, product name, start date, end date and a "CLM only" tag. It looks like a list of promotions.</td>
+    <td>Nothing.</td>
+    <td>Dated promotions could flag demand spikes. Not enough data to use.</td>
+  </tr>
+</table>
+
+<h3>Distance</h3>
+<p>Each rate-card row has <code>Distance (RT)</code>, read as a round trip in kilometres (km): 8 km at the least, 138 km at the median, 2,202 km at the most (Yala). The planner copies it to <code>rates.csv</code> as <code>distance_km</code> but nothing reads it.</p>
+<table>
+  <tr><th>Truck</th><th class="n">Rate card rows</th><th class="n">Correlation with distance</th><th>Straight-line fit (THB)</th></tr>
+  <tr><td>4W</td><td class="n">197</td><td class="n">0.993</td><td>1,166 + 6.6 &times; km</td></tr>
+  <tr><td>6W</td><td class="n">151</td><td class="n">0.997</td><td>1,643 + 14.0 &times; km</td></tr>
+  <tr><td>10W</td><td class="n">117</td><td class="n">0.995</td><td>2,915 + 16.6 &times; km</td></tr>
+</table>
+<ul>
+  <li><b>For pricing it adds nothing.</b> The trip price is almost a straight line in distance, and the rate card already holds the price.</li>
+  <li><b>For timing it is context, not a transit rule.</b> Zero elapsed transit days is the default assumption. Without binding calendars/caps, latest-date solos leave on RDD; sharing, closures and caps can move departure earlier. Long-lane distance motivates sensitivity tests, not automatic days. Supply measured province overrides through <code>transit_days_by_province</code>; a distance-band adapter is not implemented.</li>
+  <li><b>It cannot price a detour.</b> It is the distance from the warehouse, not between ship-tos, so the extra driving of a multi-drop trip is not known.</li>
+</ul>
+
+<h3>Pallets and truck loading</h3>
+<ul>
+  <li>The planner checks two limits, kg and m&sup3;. In the August plan, of the 96 trips that run on a truck, 56 are held back more by weight and 40 more by volume. 24 are at least 90% full.</li>
+  <li>Freight averages 382 kg per m&sup3;. The 4W is built to 375 kg per m&sup3; and the 10W to 429. The 6W is built to 200, which again points to its 25 m&sup3; being too high.</li>
+  <li>Real loading is also limited by pallet positions and stacking. The Product Master gives cases per pallet, but the workbook has no pallet capacity per truck type. If real trucks are pallet-limited, the plan may fill them more than the road allows.</li>
+</ul>
+
+<h3>Additional information that would improve the model</h3>
+<p>Ordered by how much each is expected to change the answer. The order is a judgment, not a measurement.</p>
+<table>
+  <tr><th>#</th><th>Information</th><th>Why it helps</th><th>How it plugs in</th><th>In the workbook?</th></tr>
+  <tr><td>1</td><td>Actual booked trips and carrier invoices: truck, date, ship-tos and cost per trip</td><td>Turns the method comparison into a real saving figure and tests the multi-drop and LTL price rules</td><td>A comparison file. No model change</td><td>No. Summary has 3 January rows</td></tr>
+  <tr><td>2</td><td>Transit days per lane or province</td><td>Today a shipment leaves on its RDD. With real transit the ship dates, and so who can share, change</td><td>Setting <code>transit_days_by_province</code> (exists)</td><td>Only distance</td></tr>
+  <tr><td>3</td><td>Pallet positions and stacking rules per truck type</td><td>A third capacity limit, probably the real one for light, bulky loads</td><td>New capacity check in the candidates (not built)</td><td>Cases per pallet yes, truck pallet counts no</td></tr>
+  <tr><td>4</td><td>Confirmed 6W volume and an 18W capacity</td><td>The 6W volume looks wrong, and 18W is never used without a capacity</td><td><code>trucks.csv</code></td><td>Values given, 18W missing</td></tr>
+  <tr><td>5</td><td>The carrier's multi-drop price rule, and distances between ship-tos</td><td>The planner prices a shared trip at its highest trip rate and ignores the detour</td><td>Change to the pricing rule</td><td>No</td></tr>
+  <tr><td>6</td><td>Delivery calendar and sharing restrictions: Sunday delivery, receiving dates, customers that must ride alone or never together</td><td>The saved default plan has 11 Sunday trips (3.9% of cost) although GI Date never falls on a Sunday; that observation is not a rule</td><td><code>planning_calendar.csv</code>, <code>weekly_calendar.csv</code>, customer permissions, <code>consolidation_overrides.csv</code> and <code>solo_only</code> are implemented; approved values must be supplied</td><td>Partly, not an approved policy</td></tr>
+  <tr><td>7</td><td>Rates for the ship-tos with none</td><td>12,940 cases (10.99% of input cases; 13.11% of m³) are excluded for want of a rate</td><td><code>rates.csv</code></td><td>No</td></tr>
+  <tr><td>8</td><td>Whether the RDD is final, or often adjusted</td><td>A moved RDD changes which shipments can share</td><td><code>delivery_date_overrides.csv</code>, with explicit approval reason and original/effective audit</td><td>Hint in NLM only, not inferred as approvals</td></tr>
+  <tr><td>9</td><td>Daily truck availability</td><td>A fleet limit would show how far the savings hold when trucks are scarce</td><td>Setting <code>max_trucks</code> (exists, off)</td><td>No</td></tr>
+  <tr><td>10</td><td>The EDI file for August</td><td>Earlier view of orders, so sharing could be planned before SAP entry</td><td>New input and adapter</td><td>Only other months</td></tr>
+</table>
+<p>Province transit overrides, pair/customer permissions, dated/weekly receiving/dispatch calendars, approved RDD overrides, solo-only restrictions, a total daily truck cap and named scenarios are implemented. Business-day transit, pallet capacity, invoice comparison and live EDI integration are not implemented. Supplying real operational values is separate from adding software capability; no values are inferred from GI Date or workbook notes.</p>
+
+<h2 id="pricing">Pricing rules</h2>
+<p>All pricing lives in <code>pricing.py</code> and <code>baseline_cost.py</code>. Nothing else computes a cost.</p>
+
+<h3>One shipment alone: the solo price</h3>
+<p>A shipment may need several trucks. The cheapest mix covering summed kg and m³ is found by integer enumeration (up to 2,000,000 combinations), otherwise a fleet MIP with a fixed 30-second limit and zero requested gap. Loads are divisible: this is not physical per-truck packing. Enumerated equal-cost mixes prefer fewer trucks, then smaller-ranked types. Nonoptimal fleet pricing is labelled, not silently called cheapest. For truck type $k$ and ship-to $j$:</p>
+\[ T_k(j) = \text{trip}_k(j) + \text{handling}_k(j) \]
+<p>A blank trip rate means that truck is not offered. Blank handling counts as 0.</p>
+<ul>
+  <li><b>FTL</b> (full truck load) pays the fleet cost.</li>
+  <li><b>LTL</b> (less than truck load) pays the cheaper of the fleet cost and the per-case bill: $\text{solo}(s)=\min\big(\text{case rate}\times\text{cases},\ \text{fleet cost}\big)$. The case rate is the MT (modern trade, large retail chains) rate if present, otherwise the GT (general trade, smaller shops) rate. A tie stays on the truck.</li>
+</ul>
+
+<h3>Several shipments on one truck</h3>
+<p>For one truck type $k$ carrying a set of drops $J$:</p>
+\[ \text{truck cost}(J,k) = \max_{j\in J} \text{trip}_k(j) + H, \qquad H=\begin{cases}\sum_{j} \text{handling}_k(j) & \text{per drop}\\ \max_j \text{handling}_k(j) & \text{per truck}\end{cases} \]
+<ul>
+  <li>Every ship-to on the trip must offer $k$, and the combined kg and m³ must fit $k$.</li>
+  <li>If any shipment is <b>FTL</b>, use the truck cost with no additional LTL case bill. LTL destinations still participate in the maximum rate and handling, so adding a rider is not always free.</li>
+  <li>If all are LTL, the trip costs $\min\big(\sum_s \text{case rate}_s\times \text{cases}_s,\ \text{truck cost}\big)$.</li>
+  <li>Two shipments for the same ship-to count as one drop.</li>
+  <li><b>Optional permissions restrict all branches.</b> Truck pricing requires every member to permit it, including LTL riders with FTL. Case pricing requires every member to be LTL, case-permitted and have a case rate. A missing case rate can still use the truck branch if all permit trucks; otherwise reject that shared price. Shared case billing still requires an offered physical truck type/capacity for all drops. Default cheaper-of-two and truck ties are unchanged.</li>
+</ul>
+<p class="assume">ASSUMPTION: the highest trip rate is the multi-drop price, handling is per drop, and LTL is the cheaper of case and truck. These have not been checked against carrier invoices.</p>
+
+<h2 id="example">Worked example</h2>
+<p>The checked-in sample (<code>inputs/sample</code>) is small enough to recompute by hand:</p>
+<table>
+  <tr><th>Ship-to</th><th>Service</th><th>Alone</th></tr>
+  <tr><td>C100</td><td>FTL (full truck load), 4W (4-wheel truck) trip rate 1,000 + 50 handling</td><td class="n">1,050</td></tr>
+  <tr><td>C200</td><td>LTL (less than truck load), 20 cases at 8 per case</td><td class="n">160</td></tr>
+  <tr><td>C300</td><td>LTL, 6 cases at 15</td><td class="n">90</td></tr>
+  <tr><td>C500</td><td>LTL, 2 cases at 12</td><td class="n">24</td></tr>
+  <tr><td colspan="2"><b>Sum of solo prices</b></td><td class="n"><b>1,324</b></td></tr>
+</table>
+<p>C100 and C200 together on one 4W cost $\max(1000, 900)+50 = 1{,}050$, because C200 is an LTL rider on an FTL truck. That replaces $1{,}050+160$, a saving of 160. The plan costs $1{,}050+90+24 = 1{,}164$ against $1{,}324$ alone. A test locks in these numbers.</p>
+
+<h2 id="candidates">Candidate trips</h2>
+<p>The optimizer does not decide who may share a truck. <code>candidates.py</code> lists every acceptable trip first, then the model picks among them.</p>
+<ul>
+  <li><b>Solo candidates.</b> Without a fleet cap, latest-date solos form a feasible baseline. With a cap, retain the nondominated cost/truck-count frontier, including mixed fleets and LTL case alternatives, over every legal departure date. The unconstrained baseline is not a constrained cost bound.</li>
+  <li><b>Shared trips</b> of 2 up to <code>max_shipments_per_trip</code> (default 3) shipments on exactly one truck type.</li>
+  <li><b>Compatibility.</b> Default <code>same_province</code>. Other modes: <code>same_group</code>, <code>same_province_or_group</code>, <code>any</code>, <code>none</code>. All member pairs must pass. Customer sharing denial and <code>solo_only</code> take precedence over pair overrides; for distinct ship-tos, deny/allow overrides precede the mode. Different shipments to the same ship-to may share even under <code>none</code>, unless sharing is denied. Province/group equality requires nonblank case-sensitive matching values. Drops count distinct ship-tos.</li>
+  <li><b>Dates.</b> Intersect each member's departure window: from the later of release and RDD minus transit minus <code>max_early_days</code>, through RDD minus transit. Use the latest common date without a cap, all common dates with one. Each member must arrive no later than its RDD and no more than the early limit before it. Raw RDD spread is not a safe test when transit differs by province.</li>
+  <li><b>Calendar filtering.</b> Filter the intersection by dispatch departure and each member's receiving arrival exceptions. Select latest surviving date without a cap; enumerate <em>all</em> surviving dates under a cap. An empty bounds window remains past due; a nonempty window fully blocked is calendar-unavailable. Individually available customers may have disjoint common dates, preventing sharing but preserving solos. No closure permits late or excessively early shipping. Resource frontiers retain only permitted case/truck alternatives.</li>
+  <li><b>Dominance pruning.</b> Without a fleet cap, retain shared trips only when cheaper than solos. With a cap, retain non-saving consolidations too: fewer trucks can serve more shipments. The cheapest feasible single-truck type per set/date is retained because these alternatives all consume one truck.</li>
+</ul>
+<p>The saved August default run has 1,512 candidates for 329 shipments. This is not a size guarantee: permissive sharing, larger candidate sets and cap-driven date expansion can grow rapidly.</p>
+
+<h2 id="model">The model</h2>
+<p>A set-partitioning MIP (mixed-integer program: an optimization problem with yes/no decisions), the same pattern as <code>order_picking/chunker/chunk_model.py</code>. Set partitioning means: choose candidate trips so that every shipment is in exactly one of them.</p>
+<table>
+  <tr><th>Symbol</th><th>Meaning</th></tr>
+  <tr><td>$S$</td><td>plannable shipments</td></tr>
+  <tr><td>$C$</td><td>candidates (solo and shared). Candidate $c$ has members $M_c\subseteq S$, cost $a_c$, early days $e_c$, upgrade count $g_c$</td></tr>
+  <tr><td>$x_c\in\{0,1\}$</td><td>candidate $c$ is used</td></tr>
+  <tr><td>$u_s\in\{0,1\}$</td><td>shipment $s$ is left unplanned. Created for a shipment with no candidate (past due or calendar-unavailable), or for all shipments when a fleet cap is set</td></tr>
+</table>
+\[ \min \;\sum_{c\in C}\big(a_c + \varepsilon\, e_c + \varepsilon\, g_c\big)\,x_c \;+\; P\sum_{s\in S} u_s \]
+\[ \sum_{c:\, s\in M_c} x_c + u_s = 1 \quad \forall s\in S \qquad\text{(each shipment covered exactly once)} \]
+\[ \sum_{c:\,\text{date}(c)=d} \text{trucks}_c\, x_c \le N_{\max} \quad \forall d \qquad\text{(optional fleet cap)} \]
+<p>Here $N_{\max}$ is the most trucks allowed to leave on one date, $\text{trucks}_c$ is how many trucks candidate $c$ uses, and $\forall$ means "for every".</p>
+<ul>
+  <li><b>Penalty.</b> Without caps, $P=\sum_s \text{solo}(s)+1$. With caps, use the sum of each member's maximum candidate cost plus 1. This safely covers costlier resource-saving trips. Priority is fewer leftover <b>shipments</b>, not cases or tonnes, then cost with bounded preferences.</li>
+  <li><b>Tie-break</b> default $\varepsilon=\dfrac{0.5}{1+n\,(D+1)}$ with $n$ all built shipments (including past due), $D$ = <code>max_early_days</code>. Weights are computed once before decomposition and reused globally, not recomputed per component. Default total is below 0.5 THB; custom weights must keep $n(Dw_e+w_g)&lt;1$ THB. Exact fractional-baht costs are reported, but sub-baht differences may be outweighed. This is not a cents-resolution guarantee. Upgrade count is the number of LTL members in a shared truck-priced booking, not a truck-size upgrade.</li>
+  <li>Reported separately: <code>total_cost</code> (sum of $a_c$ only), <code>objective_value</code>, <code>tie_break_total</code>, <code>penalty_total</code>.</li>
+</ul>
+<div class="warn">The MIP gap (how far the solver's answer may be from the proven best answer) must stay 0. The repo default of 0.01 would let a solver accept a plan costing 1% more, which is bigger than every tie-break and would make results arbitrary. The config rejects any gap above 1e-9.</div>
+
+<h2 id="solve">Solving</h2>
+<ul>
+  <li>HiGHS (an open-source optimization solver) through SciPy's <code>scipy.optimize.milp</code>, <code>mip_rel_gap = 0</code> (zero allowed distance from the proven optimum), time limit 600 s (seconds) per component.</li>
+  <li><b>Decomposition.</b> Shipments that share a candidate are connected. Each connected component is solved separately, typically a province over a short date window. A fleet cap couples the components, so decomposition is skipped when one is set.</li>
+  <li>The partition is re-checked after every solve. A broken cover raises an error.</li>
+  <li>A time-limited incumbent is kept only after integrality, cover and fleet checks. Without a usable incumbent, use known solos without caps or a feasible greedy/all-leftover plan with caps, labelled <code>fallback_*</code>, never optimal. Baseline fleet MILP timeouts also retain status/gap and use only validated covering fleets.</li>
+  <li>Trip status names are <code>optimal</code>, <code>time_limit</code>, <code>infeasible</code>, <code>unbounded</code>, <code>other</code>, prefixed with <code>fallback_</code> when recovery is used. Recovery has unknown/infinite gap (null in metadata). A capped fallback is feasible but may not maximize coverage.</li>
+  <li>The 600-second setting is per trip-model component, not a total-run budget and not the fleet-pricing limit. Nonoptimal baseline/selected-candidate prices and trip solves emit flags. A zero-gap trip solve proves optimality only for its supplied candidate prices.</li>
+</ul>
+
+<h2 id="settings">Settings and defaults</h2>
+<table>
+  <tr><th>Config field</th><th>Default</th><th>Implemented meaning</th></tr>
+  <tr><td><code>max_shipments_per_trip</code></td><td>3</td><td>Shared candidate size; positive integer</td></tr>
+  <tr><td><code>max_early_days</code> / <code>transit_days</code></td><td>1 / 0</td><td>Nonnegative integer elapsed calendar days, not business calendars</td></tr>
+  <tr><td><code>transit_days_by_province</code></td><td>empty mapping</td><td>Exact province-name overrides; nonnegative integer values (config/API only)</td></tr>
+  <tr><td><code>compat_mode</code></td><td>same_province</td><td>Pairwise sharing rule, subject to overrides</td></tr>
+  <tr><td><code>max_drops_per_trip</code></td><td>shipment cap</td><td>Positive distinct-ship-to limit</td></tr>
+  <tr><td><code>solo_only</code></td><td>empty list</td><td>Normalized ship-tos that never share</td></tr>
+  <tr><td><code>handling_basis</code></td><td>per_drop</td><td>Sum handling per distinct drop; alternative per_truck takes maximum</td></tr>
+  <tr><td><code>max_trucks</code></td><td>none</td><td>Total daily counted trucks, not by carrier/type; zero is supported. Case-priced solos use zero; every shared booking uses one</td></tr>
+  <tr><td><code>mip_rel_gap</code> / <code>time_limit_s</code></td><td>0 / 600</td><td>Gap accepted only from 0 through 1e-9; positive finite component time limit</td></tr>
+  <tr><td><code>early_delivery_weight</code> / <code>upgrade_weight</code></td><td>derived globally</td><td>Optional finite nonnegative bounded preferences (config/API only)</td></tr>
+</table>
+<p>Integer settings reject booleans, fractional values and numeric strings. Explicit CLI values override YAML/JSON config, which overrides defaults. Unknown keys fail. Nested YAML needs optional PyYAML; JSON or flat YAML with inline JSON mappings works without it.</p>
+
+<h2 id="outputs">Outputs</h2>
+<table>
+  <tr><th>File</th><th>Content</th></tr>
+  <tr><td><code>trips.csv</code></td><td>One row per selected booking, not per vehicle: date, single type/fleet mix/case label, counted trucks, distinct drops, quantities, utilization, cost, price basis, shipment ids, PO numbers</td></tr>
+  <tr><td><code>trip_shipments.csv</code></td><td>Each shipment in a trip with its ship date, RDD and early days</td></tr>
+  <tr><td><code>trip_orders.csv</code></td><td>Each order and its trip, PO numbers and <code>original_rdd,effective_rdd,override_reason</code></td></tr>
+  <tr><td><code>exclusions.csv</code></td><td>Every unplanned order, now with <code>ship_to,customer_name,province</code>, category/reason, quantities, PO numbers and original/effective date audit. Enrichment uses all demand and customers, not just eligible shipment lines; name prefers <code>customer_name</code>, then <code>name</code>; unavailable descriptions stay blank</td></tr>
+  <tr><td><code>missing_rate_customers.csv</code></td><td>Only <code>reason=no_rate</code>, grouped by customer identity: exact columns <code>ship_to,customer_name,province,orders,cases,kg,m3,first_rdd,last_rdd</code>. Distinct normalized order count, summed quantities and effective-RDD range. Other unavailable-price reasons are excluded; no matches means headers only</td></tr>
+  <tr><td><code>summary.csv</code></td><td>Totals, reconciliation, cost, baseline, saving, trucks by type, utilization, solver status and gap per component, assumptions used</td></tr>
+  <tr><td><code>flags.csv</code></td><td><code>flag, key, detail</code>: <code>rdd_tighter_than_sla</code>, <code>capacity_suspicious</code>, <code>truck_without_capacity</code>, <code>service_conflict</code>, <code>service_missing</code>, <code>not_in_master_customer</code>, <code>multidrop_priced_as_max_trip</code>, <code>po_spans_ship_tos</code>, <code>baseline_fleet_not_optimal</code>, <code>solver_not_optimal</code>, <code>candidate_pricing_not_optimal</code>. Warnings do not themselves invalidate a feasible plan</td></tr>
+  <tr><td><code>shipments.csv</code></td><td>All built eligible effective-RDD shipments with resolved permissions, including those later excluded as past due, calendar-unavailable or fleet-limited</td></tr>
+  <tr><td><code>baseline_shipments.csv</code>, <code>baseline_summary.csv</code></td><td>The one-booking-per-shipment baseline in detail, plus the same shipments priced with the workbook's sheet rule (<code>sheet_truck</code>, <code>sheet_cost</code>, <code>sheet_basis</code>)</td></tr>
+  <tr><td><code>run_metadata.json</code></td><td>Detached run id/time, full resolved config, original table hashes including optional tables, separately labelled <code>effective_orders_sha256</code> (copied demand plus audit), source/file hashes, full CLI options, baseline scope, code/environment versions, validation and pricing/solver statuses; unknown gaps are null</td></tr>
+</table>
+<p>Before writing, reports check shipment/order cover, release and each member's arrival window, dispatch/receiving calendar legality again, member pricing/sharing permissions, aggregate kg/m³ capacity and offered types, daily fleet use, quantities and objective decomposition. The whole-baht solo bound applies only without caps. Runtime includes report assembly, not disk publication. Table hashes bind metadata to validated report contents; CLI hashes raw input/config files (including optional contracts) and refuses changes or added/removed recognized inputs during planning. These checks are point-in-time checks, not filesystem locks.</p>
+<p><b>Publication:</b> plans stage <b>ten CSVs plus JSON</b>, including hashed enriched exclusions and missing-rate rollup, reject post-validation table changes and refuse overwriting existing artifacts. Weekly inputs are hashed too. Use a fresh run directory; new directories publish by rename. The builder remains <b>nine CSVs with its old exclusion schema</b> (four inputs, shipments, exclusions, issues and two baselines), no enrichment/rollup or plan metadata; existing build files can be replaced with rollback on I/O failure. Multi-file replacement is not a filesystem transaction for concurrent readers. Saved historical outputs are not retroactively upgraded.</p>
+<p><b>Comparison scope:</b> Baselines use effective-date groups and permitted pricing only, with no sharing, date scheduling or daily fleet cap. <code>baseline_cost</code> covers dateable solos, <b>including calendar-blocked demand</b>; <code>baseline_cost_all_built</code> includes past-due built shipments. Savings are blank when any otherwise-dateable demand is unserved, including calendar closure, and may be negative for complete cap-constrained coverage. Sheet-rule saving fields are blank unless all built shipments are planned and sheet-priced; the sheet comparator respects the same permissions. <code>all_trips_*</code> totals are partial when truck pricing is forbidden/unavailable: inspect <code>all_trips_unpriced_shipments</code>. <code>ltl_case_mix_cost</code> uses permitted cases, otherwise permitted fleets. No forbidden cheaper solo is used as the saving comparator. Summary utilization excludes case-priced solos and does not measure carrier LTL vehicles.</p>
+
+<h2 id="scenarios">Named what-if scenarios (implemented, unapproved)</h2>
+<p>Plan metadata records <code>optional_features</code> and detached <code>calendar_rules</code>, including normalized opens, closures, weekly ranges and precedence. Metadata weekdays use Monday=0 through Sunday=6; CSV rules use full names.</p>
+<p>New-directory publication tolerates brief Windows lock errors (codes 5/32/33) with at most five bounded attempts. Destination collisions and persistent/other failures still propagate; another run is never merged or overwritten as a retry fallback.</p>
+<p><code>scenarios.py</code> accepts a JSON manifest with required <code>baseline</code> (an exact included name) and nonempty <code>scenarios</code>. Each entry requires <code>name</code>; optional <code>config,truck_overrides,assumptions</code> default to <code>{},[],[]</code>. Unknown/duplicate JSON keys, nonfinite numbers and unsafe/case-insensitively duplicate names fail. Names are non-device ASCII slugs, maximum 64 characters. Assumptions are strings, not approval evidence.</p>
+<p>Each config independently overlays <b><code>TripConfig</code> defaults</b>, never the named baseline or preceding run. Every run gets fresh copies of all required/optional tables and pair overrides. Capacity overrides require an existing supported <code>truck_type</code> and at least one finite positive numeric <code>capacity_kg</code> or <code>capacity_m3</code>, not booleans; unspecified values stay as input. All overlays validate before solving. <b>No 6W/18W capacity is guessed.</b></p>
+<pre>{"baseline":"default","scenarios":[
+  {"name":"default","config":{},"truck_overrides":[],"assumptions":["Unapproved defaults"]},
+  {"name":"transit0","config":{"transit_days":0}},
+  {"name":"transit1","config":{"transit_days":1}},
+  {"name":"transit2","config":{"transit_days":2}},
+  {"name":"cap8","config":{"max_trucks":8}},
+  {"name":"cap4","config":{"max_trucks":4}}
+]}</pre>
+<p>These are unapproved sensitivity values, not approved policies. A ready-to-use <a href="scenarios/reference.json">reference manifest</a> supplies <code>transit0</code> as baseline with <code>transit1</code>, <code>transit2</code>, <code>cap8</code> and <code>cap4</code>, without guessed capacities. Every scenario, including baseline and savings, is labelled <code>assumed_unapproved</code>. Root outputs: <code>scenario_comparison.csv</code>, <code>scenario_metadata.json</code>; each named subdirectory has ten plan CSVs and <code>run_metadata.json</code>.</p>
+<p>Comparison retains ordinary planner savings/suppression, adds a matched <b>planned-shipment solo baseline</b> and saving, coverage quantities/reasons, bookings/consolidation, trucks, solver status/gap, changed departure dates on common planned orders and truck-mix change. Cross-scenario <code>cost_delta_vs_baseline</code> (run minus baseline), <code>saving_vs_baseline_thb/percent</code> are blank unless <b>planned normalized order IDs, each effective RDD and per-order cases/kg/m³ coverage are identical</b>. A scope explanation is supplied; equal aggregate totals or shipment IDs alone are insufficient. Percent is also blank for zero baseline cost. Matched-solo savings do not establish equal coverage across scenarios.</p>
+<p>The entire set stages in a sibling temporary directory and publishes by one rename into a <b>new root, all-or-nothing</b>. Existing destinations and symlink/junction paths are refused. Recognized inputs (including weekly calendars) and manifest are hashed before reading and rechecked for changes/additions/removals after serialization; failure cleans staging without partial published runs. Metadata records manifest, assumptions, resolved configs, explicit overrides, input/manifest hashes, run attribution and solver outcomes; root metadata also hashes the comparison CSV. Checks are point-in-time, not filesystem locks or approval.</p>
+
+<h2 id="results">August 2025 results</h2>
+<p class="note"><b>Scenario interpretation:</b> <code>scope_comparable=true</code> means the same <em>served</em> orders, effective dates and quantities, not complete input coverage. Both runs may exclude the same demand. <code>matched_solo_saving_thb</code> covers only that scenario's served shipments and can remain populated for incomplete demand; it is not full-demand saving. Cross-scenario delta is scenario minus baseline (negative = cheaper); cross-scenario saving has the opposite sign. Check exclusions, status/gaps and assumptions alongside every figure.</p>
+<div class="cards">
+  <div class="card"><b>945,946</b><span>THB (Thai baht) planned cost</span></div>
+  <div class="card"><b>1,100,355</b><span>THB baseline, each shipment alone</span></div>
+  <div class="card"><b>154,408</b><span>THB saved (14.0%)</span></div>
+  <div class="card"><b>240</b><span>bookings: 96 truck-priced fleets + 144 case-priced carrier bookings; 58 shared</span></div>
+  <div class="card"><b>104</b><span>trucks (61 4-wheel, 13 6-wheel, 30 10-wheel)</span></div>
+  <div class="card"><b>70% / 68%</b><span>weighted utilization by weight (kg) / by volume (m³)</span></div>
+</div>
+<table>
+  <tr><th>Baseline measure</th><th class="n">THB</th></tr>
+  <tr><td>Every shipment on its cheapest trucks</td><td class="n">1,877,583</td></tr>
+  <tr><td>LTL billed per case, FTL on trucks</td><td class="n">1,136,022</td></tr>
+  <tr><td><b>Cheaper of the two per shipment (the baseline)</b> (FTL = full truck load, LTL = less than truck load)</td><td class="n"><b>1,100,355</b> (FTL 434,142 + LTL 666,213)</td></tr>
+</table>
+<p>The 341 positive-quantity raw shipment groups include 12 without rates, leaving <b>329 eligible shipments</b>; excluded orders remain reconciled. The 96 truck-priced fleet bookings use <b>104 physical trucks</b>, not 240. Case-priced bookings do not identify carrier vehicles. Per-case billing beats a truck in 158 of 172 LTL shipments and loses in 14. Plan checks: 329 shipments, 1,512 candidates, solver optimal with gap 0, tie-break total 0.05 THB, no trip shipping after an RDD, no shipment more than 1 day early, no trip mixing provinces. Against the workbook's own truck rule the saving is 171,328 THB (15.3%); see <a href="#excel">Versus the Excel</a>.</p>
+<p>Exact saved cost: <b>945,946.31875 THB</b>; solo baseline <b>1,100,354.51875 THB</b>; saving <b>154,408.2 THB</b> (14.032587%). Planned demand is <b>1,357 orders / 104,805 cases / 606,228.7206 kg / 1,599.834224 m³</b>. The 79 excluded orders carry 12,940 cases / 96,668.5622 kg / 241.456022 m³. Only <b>89.01% of input cases</b> are costed as served: this is not the freight cost of all demand.</p>
+<p><b>Baseline count semantics:</b> 379 trucks (303 4W / 43 6W / 33 10W), 52% kg / 46% m³ belong to the <code>all_trips_*</code> scenario. The cheaper-of-two <code>cheaper_*</code> counts cover only truck-priced solos: 146 4W / 20 6W / 29 10W. Fleet count columns on baseline detail retain the computed fleet even when case billing wins; they are not actual chosen carrier vehicles.</p>
+<div class="warn">The saving comes almost entirely from shared trips, under the assumed rules above. If the carrier or customers do not allow them, the figure shrinks.</div>
+
+<h2 id="excel">Versus the Excel</h2>
+<p>The workbook holds no record of the planners' actual trips or invoices. Its <code>Pivot_Summary</code> gives one estimated truck per ship-to for 22 Aug 2025, so the comparison prices that estimate with the rate card. 52 ship-tos with rates on both sides, 11,536 cases:</p>
+<table>
+  <tr><th>Method</th><th class="n">THB</th></tr>
+  <tr><td>Excel truck choice, every ship-to pays its truck</td><td class="n">321,477</td></tr>
+  <tr><td>Excel truck choice, LTL billed cheaper of case and truck</td><td class="n">163,841</td></tr>
+  <tr><td>Planner, best trucks, no sharing</td><td class="n">162,902</td></tr>
+  <tr><td><b>Planner, with sharing</b></td><td class="n"><b>151,419</b> (7.6% lower, 7 shared trips of 41)</td></tr>
+</table>
+<p>Truck choice alone saves about 0.6% (the Excel uses a 6W where two 4W are cheaper at three ship-tos). Sharing is where the money is. This is a method comparison, not a comparison with real spend.</p>
+
+<h3>How the Excel picks a truck</h3>
+<p>The <code>EST Truck Usage</code> column on <code>Pivot_Summary</code> is a formula, not a record of what was booked. For each ship-to and day it takes the smallest single truck that fits both limits:</p>
+<ul>
+  <li><b>4W</b> if the load is at most 1,500 kg and 4 m&sup3;;</li>
+  <li>else <b>6W</b> if at most 5,000 kg and 25 m&sup3;;</li>
+  <li>else <b>10W</b> if at most 15,000 kg and 35 m&sup3;;</li>
+  <li>else <b>6W &times; n</b>, where n is the weight divided by 5,000 kg, rounded up. This step ignores volume.</li>
+</ul>
+<p>Those are the August capacities. In code, usable types are sorted by kg then m³ capacity, not chosen by rate; an unavailable chosen type can make the sheet comparison unpriced (or use an available LTL case bill). It is deliberately separate from the planner's fleet optimization.</p>
+<p><code>Utilization</code> is the larger of the weight share and the volume share of that truck. The sheet covers only 22 Aug 2025 (57 ship-tos) and never shares a truck between ship-tos. The planner reproduces column <code>EST Truck Usage</code> for all 53 ship-tos that appear in both.</p>
+
+<h3>The sheet rule over the whole month</h3>
+<p>Applying the same rule to all 329 August shipments, priced with the rate card (LTL = less than truck load, billed at the cheaper of per-case and truck, as everywhere else):</p>
+<table>
+  <tr><th>Method</th><th class="n">THB</th><th class="n">Trucks</th><th class="n">Utilization by kg / m&sup3;</th></tr>
+  <tr><td>Sheet rule, one truck per ship-to and day</td><td class="n">1,117,275</td><td class="n">171 (98 4W, 44 6W, 29 10W)</td><td class="n">50% / 42%</td></tr>
+  <tr><td>Baseline: cheapest trucks, no sharing</td><td class="n">1,100,355</td><td class="n">&ndash;</td><td class="n">&ndash;</td></tr>
+  <tr><td><b>Planner, with sharing</b></td><td class="n"><b>945,946</b> (15.3% below the sheet rule)</td><td class="n">104</td><td class="n">70% / 68%</td></tr>
+</table>
+<ul>
+  <li>The sheet rule costs 16,920 THB more than the cheapest trucks without sharing. It looks only at size, not price: for 24 shipments it picks one 6W where two 4W are cheaper.</li>
+  <li>On 22 Aug the sheet itself shows an average utilization of 34.8%, and 37 of its 56 ship-tos are under 50%.</li>
+  <li>The sheet-rule truck count and utilization cover the shipments that run on a truck. LTL shipments billed per case ride on a carrier's shared truck and are left out of both. The planner's figures also include trucks shared across ship-tos, so the utilization columns are not strictly like for like.</li>
+  <li>The sheet is an estimate. The workbook has no invoices or trip sheets, so this still compares methods, not real spend.</li>
+</ul>
+
+<h2 id="assumptions">Assumptions and open items</h2>
+<table>
+  <tr><th>#</th><th>Item</th><th>Current default</th></tr>
+  <tr><td>1</td><td>LTL price</td><td>Cheaper of per-case and truck. Check carrier invoices, for example ship-to 135448 on 2025-08-16 and 616512 on 2025-08-20</td></tr>
+  <tr><td>2</td><td>Handling</td><td>Per drop. Only 15 ship-tos on 4W carry any</td></tr>
+  <tr><td>3</td><td>Multi-drop price</td><td>Highest trip rate. 35 ship-tos of the Foodland and Donki retail chains carry a multidrop remark</td></tr>
+  <tr><td>4</td><td>Who may share a truck</td><td>Same province</td></tr>
+  <tr><td>5</td><td>Early delivery</td><td>Up to 1 day, no cost beyond the tie-break</td></tr>
+  <tr><td>6</td><td>Transit days</td><td>0 by default; province overrides exist. Long-lane measured transit is still needed; distance does not automatically set timing</td></tr>
+  <tr><td>7</td><td>Capacities</td><td>6W 25 m³ as given. 18W unknown and excluded</td></tr>
+  <tr><td>8</td><td>RDD (required delivery date) tighter than SLA (promised lead time)</td><td>Plan as given and flag (57 orders)</td></tr>
+  <tr><td>9</td><td>Ship-tos with no rate</td><td>Excluded (12,940 cases). A rate source is needed</td></tr>
+  <tr><td>10</td><td>Ship-tos missing from Master Customer</td><td>Planned from the rate card and flagged</td></tr>
+  <tr><td>11</td><td>Fleet limit</td><td>Off. Case-priced LTL solos count as 0 trucks; consolidated bookings consume one. This is accounting, not measured carrier fleet capacity.</td></tr>
+  <tr><td>12</td><td>Remainder of a split shipment</td><td>Cannot share a truck</td></tr>
+</table>
+
+<h2 id="pending">What is still pending</h2>
+<p>Separate missing operational inputs from missing software. An implemented option is not an approved policy; a passing test is not dispatch authorization.</p>
+<table>
+  <tr><th>Business inputs / approvals</th><th>Already available</th><th>Still required</th></tr>
+  <tr><td>Missing rates</td><td>Customer-level no-rate rollup and enriched exclusions</td><td>Approved tariffs/service for excluded destinations. Reporting alone does not recover the 10.99% of input cases.</td></tr>
+  <tr><td>Transit and capacities</td><td>Province transit configuration, direct truck inputs and scenario capacity overlays</td><td>Measured transit, confirmation of 6W volume, both 18W capacities and destination suitability. No replacement values are supplied.</td></tr>
+  <tr><td>Pricing and sharing</td><td>Current max-rate multi-drop, cheaper-of-two LTL, two handling bases, customer/pair restrictions</td><td>Carrier invoices and confirmation of formulas, customer sharing/early-delivery rules. Other tariffs need implementation.</td></tr>
+  <tr><td>Calendars / RDDs</td><td>Weekly availability, dated opening/closure overrides and auditable date corrections</td><td>Approved schedules, date ranges and authorized revised RDD/reason; do not infer them from GI or NLM notes.</td></tr>
+  <tr><td>Fleet</td><td>Total daily counted-truck cap</td><td>Actual cap and agreement on case-solo zero/shared-one accounting. No type/carrier availability calendar exists.</td></tr>
+</table>
+<table>
+  <tr><th>Deferred software (not implemented)</th><th>Specification / data needed</th></tr>
+  <tr><td>Live eligibility / horizon</td><td>Planning date, allowed Status/DlBl/Rj lists, blank/unknown treatment and mixed-status SKU-line/order handling. No automatic retrospective filtering.</td></tr>
+  <tr><td>Hold, force dispatch, minimum load</td><td>Horizon, deferral/deadline rules, forced-date semantics, thresholds and objective/coverage treatment. There is currently no held state, forced-date input or minimum-load warning/constraint. Future force instructions must not silently bypass calendars, release or fleet feasibility.</td></tr>
+  <tr><td>Hub delivery</td><td>Confirmed customer-to-hub mapping, rates, onward-leg scope and completion definition. Hub-only cost cannot be called a saving against full final-customer delivery.</td></tr>
+  <tr><td>Business-day transit / appointments</td><td>Counting rules, time zones, appointment windows and cutoff times. Weekly open days do not change elapsed-day transit.</td></tr>
+  <tr><td>Pallets / physical loading</td><td>SKU quantities, complete product data, palletization/rounding/mixing/stackability and truck pallet positions. Aggregate kg/m³ does not prove physical fit.</td></tr>
+  <tr><td>Routing / detailed resources</td><td>Inter-customer travel/time, sequencing, type/carrier supply and warehouse/dock constraints. Bookings are not routed execution plans.</td></tr>
+  <tr><td>Actual-spend comparison / EDI input</td><td>Matching-period booked trips and invoices with equivalent served scope; matching EDI and identity rules. Current comparisons remain modeled estimates.</td></tr>
+</table>
+<p><b>Pending analysis:</b> run the complete five-scenario August reference batch into a fresh root; review coverage/exclusions and solver status before cost. That batch has not yet been executed as part of this update. Capacity scenarios require explicit values. Business validation and an operational pilot remain pending. A fast/slow test split is a maintenance option, not delivered functionality. No commit, deployment or business approval is implied.</p>
+<p>Saved outputs keep their historical schema. Rerun into a fresh directory for ten plan CSVs and current metadata; do not edit old results to appear regenerated. See <a href="specification.md">specification sections 13.1–13.3</a> for the detailed pending-work register.</p>
+<h2 id="code">Code map and tests</h2>
+<table>
+  <tr><th>File (<code>trip_planning/source/</code>)</th><th>Role</th></tr>
+  <tr><td><code>va05_adapter.py</code></td><td>Workbook to clean tables, with the contract column names</td></tr>
+  <tr><td><code>build_inputs.py</code></td><td>Command-line program: writes the four input CSV files plus shipments and baseline</td></tr>
+  <tr><td><code>config.py</code></td><td><code>TripConfig</code>, strict settings validation, shared id normalization, global tie weights and YAML/JSON parsing</td></tr>
+  <tr><td><code>retrospective.py</code></td><td>Strict optional schemas, permissions/ISO dates, immutable dated/weekly calendars with precedence, copy-on-apply date approvals and audit</td></tr>
+  <tr><td><code>shipments.py</code></td><td>Group orders, exclusions and reason codes, warning flags</td></tr>
+  <tr><td><code>baseline_cost.py</code></td><td>Rate and truck parsing, cheapest fleet, the baseline table, the workbook's sheet-rule truck choice</td></tr>
+  <tr><td><code>pricing.py</code></td><td>Solo and multi-drop price, no file reading or writing (I/O)</td></tr>
+  <tr><td><code>candidates.py</code></td><td>Compatibility, dates, capacity, dominance pruning</td></tr>
+  <tr><td><code>trip_model.py</code></td><td>The HiGHS set-partitioning model, per component (group of linked shipments)</td></tr>
+  <tr><td><code>reporting.py</code></td><td>Output files, hard-rule checks, reconciliation (planned plus excluded equals ordered)</td></tr>
+  <tr><td><code>plan_trips.py</code></td><td>The planner's command-line program (CLI)</td></tr>
+  <tr><td><code>scenarios.py</code></td><td>Manifest validation, independent what-if overlays, coverage-safe comparisons and atomic scenario-set publication</td></tr>
+  <tr><td><code>provenance.py</code></td><td>Detached metadata, hashes and code/environment versions</td></tr>
+  <tr><td><code>publication.py</code></td><td>Staged directory rename or file replacement with rollback</td></tr>
+</table>
+<p><b>Verified 31 October 2026: 417 tests passed in 348.81 seconds</b>, including August extract/raw-workbook acceptance. All trip-planning Python source/test files compiled; Ruff/Mypy were unavailable on PATH. The previous suite had 279 tests (195 pre-retrospective). Expanded coverage includes enriched exclusions/rate gaps, weekly reopening/precedence, real scenario CLI integration, independent overlays, scope-aware comparisons, input mutation and bounded Windows-lock retries. Independent read-only review found no concrete high/medium defects. August checks retain exact cost, quantities, candidates, bookings/trucks and gap 0. Data-dependent tests skip without fixtures; tests publish only to temporary directories. Passing tests do not imply business approval.</p>
+
+<h2 id="run">How to run</h2>
+<pre>pip install -r requirements.txt
+
+# 1. Workbook to CSVs (writes trip_planning/outputs/va05_aug2025/)
+python trip_planning/source/build_inputs.py
+
+# 2. Plan into a fresh output directory (PowerShell-compatible one line)
+python trip_planning/source/plan_trips.py --inputs trip_planning/outputs/va05_aug2025 --out trip_planning/outputs/plan_new_run
+
+# Options
+#   --max-shipments-per-trip 3   --max-early-days 1   --transit-days 0
+#   --compat-mode same_province  --handling-basis per_drop
+#   --max-drops-per-trip 3       --solo-only ID1,ID2
+#   --max-trucks N               --time-limit 600     --config config.yaml
+
+# Named unapproved scenarios: shipped reference manifest; use a NEW root
+python trip_planning/source/scenarios.py --inputs trip_planning/outputs/va05_aug2025 --scenarios trip_planning/scenarios/reference.json --out trip_planning/outputs/scenarios_new_run
+
+# Tests
+python -m pytest -c trip_planning/pytest.ini trip_planning/tests -q</pre>
+<p>The builder also accepts <code>--workbook</code> and <code>--out</code>. Planner input/output paths are required. <code>--time-limit</code> maps to <code>time_limit_s</code>; province transit overrides, custom tie weights and MIP gap use config/API fields. Planner validation/publication errors exit nonzero with a concise stderr message; the builder propagates validation exceptions. A <b>valid timeout/fallback can exit zero</b>: check summary status/gap and flags before using results. Process success is not proof of optimality or dispatch approval.</p>
+<p>To opt in, put <code>planning_calendar.csv</code>, <code>weekly_calendar.csv</code> and/or <code>delivery_date_overrides.csv</code> beside the required inputs and add permission columns to the customer table. The same CLI discovers them automatically. Do not copy synthetic test policies into operational inputs; obtain approved values. Standalone baseline CLI also applies approvals and permissions but does not schedule calendar-feasible dates.</p>
+
+<h2 id="limits">Limits</h2>
+<p class="assume"><b>Approval gates remain open.</b> No business approval is implied by passing tests. Obtain carrier invoices and actual bookings, signed LTL/multi-drop/handling tariffs, customer consolidation and early-arrival permissions, lane transit times, appointment/holiday/dispatch calendars, measured capacities and daily/type/carrier availability. These inputs were not supplied and have not been invented. The master LTL / contract FTL conflict for customer 626378 is retained as a warning while using contract FTL.</p>
+<ul>
+  <li>No route sequencing, so a multi-drop trip is priced, not routed. Drop order and driving time are not modelled.</li>
+  <li>A shipment is never split across dates. A shipment bigger than one truck uses its own solo fleet and cannot share.</li>
+  <li>Shared trips are capped at 3 shipments by default. Raising it grows the candidate list quickly.</li>
+  <li>The savings figure depends on unconfirmed business rules and on a baseline that is computed, not taken from invoices.</li>
+  <li>Floor layout and axle limits are out of scope here. That is <code>loadmax/</code>.</li>
+  <li>Defaults remain unchanged. No business-day transit, appointment/cutoff times, live eligibility/horizon, frozen bookings, holding/force mechanism, hub routing or pallet model. No objective or physical loading change. Dated/weekly calendars only filter existing release/transit/early bounds; approvals are the only explicit RDD changes.</li>
+</ul>
+</main>
+</div>
+<footer>Implementation synchronized 31 October 2026. Optional retrospective contracts do not supply real policies. August numbers are saved default-scenario results, not invoice-verified savings or operational dispatch approval.</footer>
+</body>
+</html>

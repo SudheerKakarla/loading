@@ -21,15 +21,17 @@ TRUCK_TYPES = ("4W", "6W", "10W", "18W")
 
 def norm_id(value: object) -> str:
     """Strip whitespace and a trailing ``.0`` left by spreadsheet ids."""
-    if value is None:
+    if value is None or isinstance(value, bool):
+        if isinstance(value, bool):
+            return "true" if value else "false"
         return ""
     if isinstance(value, float):
-        if math.isnan(value):
+        if not math.isfinite(value):
             return ""
         if value.is_integer():
             return str(int(value))
     text = str(value).strip()
-    if text.lower() in {"", "nan", "none", "<na>"}:
+    if text.lower() in {"", "nan", "none", "<na>", "nat", "inf", "-inf", "+inf"}:
         return ""
     if text.endswith(".0"):
         stem = text[:-2]
@@ -59,38 +61,30 @@ class TripConfig:
     def __post_init__(self) -> None:
         self.solo_only = tuple(norm_id(item) for item in self.solo_only if norm_id(item))
         self.transit_days_by_province = {
-            str(province): int(days) for province, days in self.transit_days_by_province.items()
+            str(province).strip(): _exact_int(days, f"transit_days_by_province[{province}]", minimum=0)
+            for province, days in self.transit_days_by_province.items()
         }
-        if self.max_shipments_per_trip < 1:
-            raise ValueError("max_shipments_per_trip must be at least 1.")
-        if self.max_early_days < 0:
-            raise ValueError("max_early_days must be >= 0.")
-        if self.transit_days < 0:
-            raise ValueError("transit_days must be >= 0.")
+        self.max_shipments_per_trip = _exact_int(
+            self.max_shipments_per_trip, "max_shipments_per_trip", minimum=1
+        )
+        self.max_early_days = _exact_int(self.max_early_days, "max_early_days", minimum=0)
+        self.transit_days = _exact_int(self.transit_days, "transit_days", minimum=0)
+        self.max_drops_per_trip = _exact_int(
+            self.max_drops_per_trip, "max_drops_per_trip", minimum=1, allow_none=True
+        )
+        self.max_trucks = _exact_int(self.max_trucks, "max_trucks", minimum=0, allow_none=True)
         if self.compat_mode not in COMPAT_MODES:
             raise ValueError(
                 "compat_mode must be one of " + ", ".join(COMPAT_MODES) + "."
             )
         if self.handling_basis not in HANDLING_BASES:
             raise ValueError("handling_basis must be per_drop or per_truck.")
-        if self.max_drops_per_trip is not None and self.max_drops_per_trip < 1:
-            raise ValueError("max_drops_per_trip must be at least 1 when set.")
-        if self.max_trucks is not None and self.max_trucks < 0:
-            raise ValueError("max_trucks must be >= 0 when set.")
-        if (
-            not math.isfinite(self.mip_rel_gap)
-            or self.mip_rel_gap < 0
-            or self.mip_rel_gap > 1e-9
-        ):
+        self.mip_rel_gap = _exact_finite(self.mip_rel_gap, "mip_rel_gap", minimum=0.0)
+        if self.mip_rel_gap > 1e-9:
             raise ValueError("mip_rel_gap must be between 0 and 1e-9.")
-        if not math.isfinite(self.time_limit_s) or self.time_limit_s <= 0:
-            raise ValueError("time_limit_s must be a finite number > 0.")
-        for name, weight in (
-            ("early_delivery_weight", self.early_delivery_weight),
-            ("upgrade_weight", self.upgrade_weight),
-        ):
-            if weight is not None and (not math.isfinite(weight) or weight < 0):
-                raise ValueError(f"{name} must be a finite number >= 0 when set.")
+        self.time_limit_s = _exact_finite(self.time_limit_s, "time_limit_s", minimum=0.0, positive=True)
+        self.early_delivery_weight = _optional_weight(self.early_delivery_weight, "early_delivery_weight")
+        self.upgrade_weight = _optional_weight(self.upgrade_weight, "upgrade_weight")
 
     @property
     def drop_cap(self) -> int:
@@ -102,6 +96,42 @@ class TripConfig:
         if province in self.transit_days_by_province:
             return int(self.transit_days_by_province[province])
         return int(self.transit_days)
+
+
+def _exact_int(value: object, name: str, *, minimum: int | None = None, allow_none: bool = False) -> int | None:
+    """Reject booleans, fractional values, and numeric strings. JSON integers are ints."""
+    if value is None and allow_none:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer.")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}.")
+    return value
+
+
+def _exact_finite(
+    value: object,
+    name: str,
+    *,
+    minimum: float | None = None,
+    positive: bool = False,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite number.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite number.")
+    if positive and number <= 0:
+        raise ValueError(f"{name} must be a finite number > 0.")
+    if minimum is not None and number < minimum:
+        raise ValueError(f"{name} must be >= {minimum}.")
+    return number
+
+
+def _optional_weight(value: object, name: str) -> float | None:
+    if value is None:
+        return None
+    return _exact_finite(value, name, minimum=0.0)
 
 
 def tie_break_weights(n_shipments: int, max_early_days: int) -> tuple[float, float]:

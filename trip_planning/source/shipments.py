@@ -1,21 +1,22 @@
-"""Group orders into shipments (one ship-to, one RDD) and set aside bad rows.
+"""Group orders into shipments (one ship-to, one effective RDD) and set aside bad rows.
 
 Data-quality exclusions never reach the MIP. Priority, first match wins:
 
-1. ``no_master_customer`` — ship-to is blank or missing from the customer master.
+1. ``no_master_customer`` — ship-to is blank or missing from the customer table.
 2. ``zero_quantity`` — cases are 0.
 3. ``no_rate`` — ship-to has no rate row.
-4. ``truck_type_not_offered`` — no usable truck, and no LTL case rate either.
+4. ``service_not_permitted`` — an explicit pricing restriction leaves no priced route.
+5. ``truck_type_not_offered`` — no usable truck, and no LTL case rate either.
 
-Past-due shipments stay in the shipment table. The MIP leaves them unplanned.
+Past-due and calendar-unavailable shipments stay in the shipment table.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
-from typing import NamedTuple
+from typing import Mapping, NamedTuple
 
 import pandas as pd
 
@@ -29,6 +30,24 @@ from baseline_cost import (
     parse_trucks,
 )
 from config import TripConfig, norm_id
+from retrospective import (
+    apply_delivery_overrides,
+    clean_po_numbers,
+    coerce_stored_date,
+    parse_bool,
+    parse_user_date,
+)
+
+RECOGNIZED_INPUTS = (
+    "orders.csv",
+    "customers.csv",
+    "rates.csv",
+    "trucks.csv",
+    "consolidation_overrides.csv",
+    "planning_calendar.csv",
+    "weekly_calendar.csv",
+    "delivery_date_overrides.csv",
+)
 
 _QTY_TOL = 1e-9
 
@@ -43,6 +62,7 @@ class ShipmentBuild(NamedTuple):
     input_kg: float
     input_m3: float
     order_ids: tuple[str, ...]
+    effective_orders: pd.DataFrame
 
 
 @dataclass(frozen=True)
@@ -52,6 +72,9 @@ class InputTables:
     rates: pd.DataFrame
     trucks: pd.DataFrame
     overrides: pd.DataFrame | None = None
+    planning_calendar: pd.DataFrame | None = None
+    delivery_date_overrides: pd.DataFrame | None = None
+    weekly_calendar: pd.DataFrame | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +90,9 @@ class Shipment:
     province: str
     customer_group: str
     order_ids: tuple[str, ...]
+    allow_truck: bool = True
+    allow_case: bool = True
+    allow_sharing: bool = True
 
 
 def read_inputs(path: Path) -> InputTables:
@@ -83,9 +109,20 @@ def read_inputs(path: Path) -> InputTables:
     customers = _read_csv(folder / "customers.csv")
     rates = _read_csv(folder / "rates.csv")
     trucks = _read_csv(folder / "trucks.csv")
-    override_path = folder / "consolidation_overrides.csv"
-    overrides = _read_csv(override_path) if override_path.is_file() else None
-    return InputTables(orders, customers, rates, trucks, overrides)
+    overrides = _optional_csv(folder, "consolidation_overrides.csv")
+    planning_calendar = _optional_csv(folder, "planning_calendar.csv")
+    delivery_date_overrides = _optional_csv(folder, "delivery_date_overrides.csv")
+    weekly_calendar = _optional_csv(folder, "weekly_calendar.csv")
+    return InputTables(
+        orders,
+        customers,
+        rates,
+        trucks,
+        overrides,
+        planning_calendar,
+        delivery_date_overrides,
+        weekly_calendar,
+    )
 
 
 def build_shipments(
@@ -94,14 +131,17 @@ def build_shipments(
     rates: pd.DataFrame,
     trucks: pd.DataFrame,
     cfg: TripConfig | None = None,
+    *,
+    delivery_date_overrides: pd.DataFrame | None = None,
 ) -> ShipmentBuild:
-    """Group by ship-to and RDD. ``cfg`` does not change exclusions; dates are applied later."""
+    """Group by ship-to and effective RDD. Approved dates are applied to a copy first."""
     if cfg is None:
         cfg = TripConfig()
     if not isinstance(cfg, TripConfig):
         raise TypeError("cfg must be a TripConfig.")
 
     order_rows = _order_rows(orders)
+    apply_delivery_overrides(order_rows, delivery_date_overrides)
     customer_rows = _customer_rows(customers)
     rate_cards = parse_rates(rates)
     truck_types = parse_trucks(trucks)
@@ -122,25 +162,17 @@ def build_shipments(
         input_m3 += row["volume_m3"]
         reason = _exclusion_reason(row, customers_by_id, rate_cards, truck_types)
         if reason is not None:
-            exclusions.append(
-                {
-                    "order_id": row["order_id"],
-                    "shipment_id": "",
-                    "category": "data_quality",
-                    "reason": reason,
-                    "cases": row["cases"],
-                    "kg": row["weight_kg"],
-                    "m3": row["volume_m3"],
-                }
-            )
+            exclusions.append(_exclusion_row(row, "", "data_quality", reason, customers_by_id))
             continue
         customer = customers_by_id[row["ship_to"]]
         rate = rate_cards[row["ship_to"]]
         row["service"] = resolve_service(customer["service"], rate.service)
         row["province"] = customer["province"]
         row["group"] = customer["group"]
-        row["doc_date"] = _require_date(row["doc_date"], row["order_id"], "doc_date")
-        row["rdd"] = _require_date(row["rdd"], row["order_id"], "rdd")
+        row["allow_truck"] = customer["allow_truck"]
+        row["allow_case"] = customer["allow_case"]
+        row["allow_sharing"] = customer["allow_sharing"]
+        row["customer_name"] = customer["name"]
         kept.append(row)
 
     grouped: dict[tuple[str, date], list[dict]] = {}
@@ -166,6 +198,9 @@ def build_shipments(
                 "province": members[0]["province"],
                 "group": members[0]["group"],
                 "order_ids": ";".join(order_ids),
+                "allow_truck_pricing": members[0]["allow_truck"],
+                "allow_case_pricing": members[0]["allow_case"],
+                "allow_sharing": members[0]["allow_sharing"],
             }
         )
         for member in members:
@@ -179,6 +214,12 @@ def build_shipments(
                     "cases": member["cases"],
                     "weight_kg": member["weight_kg"],
                     "volume_m3": member["volume_m3"],
+                    "po_numbers": member["po_numbers"],
+                    "original_rdd": member["original_rdd"],
+                    "effective_rdd": member["effective_rdd"],
+                    "override_reason": member["override_reason"],
+                    "customer_name": member["customer_name"],
+                    "province": member["province"],
                 }
             )
 
@@ -190,6 +231,35 @@ def build_shipments(
         input_kg=input_kg,
         input_m3=input_m3,
         order_ids=tuple(sorted(seen_orders)),
+        effective_orders=_frame(
+            [
+                {
+                    "order_id": row["order_id"],
+                    "ship_to": row["ship_to"],
+                    "doc_date": row["doc_date"],
+                    "original_rdd": row["original_rdd"],
+                    "effective_rdd": row["effective_rdd"],
+                    "override_reason": row["override_reason"],
+                    "cases": row["cases"],
+                    "weight_kg": row["weight_kg"],
+                    "volume_m3": row["volume_m3"],
+                    "po_numbers": row["po_numbers"],
+                }
+                for row in order_rows
+            ],
+            [
+                "order_id",
+                "ship_to",
+                "doc_date",
+                "original_rdd",
+                "effective_rdd",
+                "override_reason",
+                "cases",
+                "weight_kg",
+                "volume_m3",
+                "po_numbers",
+            ],
+        ),
     )
 
 
@@ -198,6 +268,7 @@ def build_flags(
     customers: pd.DataFrame,
     rates: pd.DataFrame,
     trucks: pd.DataFrame,
+    effective_rdd: Mapping[str, date] | None = None,
 ) -> pd.DataFrame:
     """Warnings that do not, by themselves, drop an order from the plan."""
     flags: list[dict] = []
@@ -210,7 +281,9 @@ def build_flags(
         if customer is None or customer["sla_days"] is None:
             continue
         doc_date = _optional_date(row["doc_date"])
-        rdd = _optional_date(row["rdd"])
+        rdd = None if effective_rdd is None else effective_rdd.get(row["order_id"])
+        if rdd is None:
+            rdd = _optional_date(row["rdd"])
         if doc_date is None or rdd is None:
             continue
         lead = (rdd - doc_date).days
@@ -227,15 +300,24 @@ def build_flags(
         rate = rate_cards.get(ship_to)
         customer_service = _clean_service(customer["service"])
         rate_service = "" if rate is None or rate.service is None else _clean_service(rate.service)
-        if customer_service and rate_service and customer_service != rate_service:
+        master_service = _clean_service(customer.get("service_master"))
+        contract_service = _clean_service(customer.get("service_contract"))
+        marked_conflict = bool(customer.get("service_conflict"))
+        if (customer_service and rate_service and customer_service != rate_service) or marked_conflict or (
+            master_service and contract_service and master_service != contract_service
+        ):
+            detail = f"customer {customer_service or master_service or 'blank'} vs rate card {rate_service or contract_service or 'blank'}"
+            if master_service and contract_service and master_service != contract_service:
+                detail = f"master {master_service} vs contract {contract_service}; effective service is used"
+            elif customer_service and rate_service and customer_service != rate_service:
+                detail = f"customer {customer_service} vs rate card {rate_service}; customer service is used"
+            flags.append({"flag": "service_conflict", "key": ship_to, "detail": detail})
+        if customer.get("in_master") is False:
             flags.append(
                 {
-                    "flag": "service_conflict",
+                    "flag": "not_in_master_customer",
                     "key": ship_to,
-                    "detail": (
-                        f"customer {customer_service} vs rate card {rate_service}; "
-                        "customer service is used"
-                    ),
+                    "detail": "customer row was built from the rate card; not in Master Customer",
                 }
             )
         if not customer_service and not rate_service:
@@ -283,6 +365,14 @@ def build_flags(
             )
     for truck_type, detail in _suspicious_capacity(truck_types):
         flags.append({"flag": "capacity_suspicious", "key": truck_type, "detail": detail})
+    for po_number, ship_tos in sorted(_po_spans(orders).items()):
+        flags.append(
+            {
+                "flag": "po_spans_ship_tos",
+                "key": po_number,
+                "detail": "ship-tos " + ", ".join(ship_tos),
+            }
+        )
 
     return _frame(flags, ["flag", "key", "detail"]).sort_values(
         ["flag", "key"], kind="mergesort"
@@ -310,6 +400,9 @@ def to_shipments(frame: pd.DataFrame) -> list[Shipment]:
                 province="" if record.get("province") is None else str(record["province"]).strip(),
                 customer_group="" if record.get("group") is None else str(record["group"]).strip(),
                 order_ids=order_ids,
+                allow_truck=_stored_bool(record, "allow_truck_pricing"),
+                allow_case=_stored_bool(record, "allow_case_pricing"),
+                allow_sharing=_stored_bool(record, "allow_sharing"),
             )
         )
     return shipments
@@ -332,11 +425,37 @@ def _exclusion_reason(row: dict, customers: dict, rates: dict, trucks: list[Truc
     rate = rates.get(ship_to)
     if rate is None:
         return "no_rate"
-    service = resolve_service(customers[ship_to]["service"], rate.service)
-    has_case = service == "LTL" and case_rate_of(rate) is not None
-    if not offers_for(rate, trucks) and not has_case:
-        return "truck_type_not_offered"
-    return None
+    customer = customers[ship_to]
+    service = resolve_service(customer["service"], rate.service)
+    truck_offered = bool(offers_for(rate, trucks))
+    case_offered = service == "LTL" and case_rate_of(rate) is not None
+    truck_ok = truck_offered and customer["allow_truck"]
+    case_ok = case_offered and customer["allow_case"]
+    if truck_ok or case_ok:
+        return None
+    if (truck_offered and not customer["allow_truck"]) or (case_offered and not customer["allow_case"]):
+        return "service_not_permitted"
+    return "truck_type_not_offered"
+
+
+def _exclusion_row(row: dict, shipment_id: str, category: str, reason: str, customers: dict) -> dict:
+    customer = customers.get(row["ship_to"])
+    return {
+        "order_id": row["order_id"],
+        "shipment_id": shipment_id,
+        "ship_to": row["ship_to"],
+        "customer_name": "" if customer is None else customer["name"],
+        "province": "" if customer is None else customer["province"],
+        "category": category,
+        "reason": reason,
+        "cases": row["cases"],
+        "kg": row["weight_kg"],
+        "m3": row["volume_m3"],
+        "po_numbers": row.get("po_numbers", ""),
+        "original_rdd": _iso(row.get("original_rdd", row.get("rdd"))),
+        "effective_rdd": _iso(row.get("effective_rdd", row.get("rdd"))),
+        "override_reason": row.get("override_reason", ""),
+    }
 
 
 def _suspicious_capacity(trucks: list[TruckType]) -> list[tuple[str, str]]:
@@ -367,32 +486,61 @@ def _rated_truck_types(rate_cards: dict) -> set[str]:
 
 
 def _order_rows(frame: pd.DataFrame) -> list[dict]:
-    rows = _take(frame, ["order_id", "ship_to", "doc_date", "rdd", "cases", "weight_kg", "volume_m3"], "orders")
+    columns = column_map(frame)
+    required = ["order_id", "ship_to", "doc_date", "rdd", "cases", "weight_kg", "volume_m3"]
+    missing = [name for name in required if name not in columns]
+    if missing:
+        raise ValueError("orders is missing columns: " + ", ".join(missing))
+    po_column = columns.get("po_numbers")
     cleaned = []
-    for row in rows:
-        order_id = norm_id(row["order_id"])
+    for record in frame.to_dict("records"):
+        order_id = norm_id(record[columns["order_id"]])
         if not order_id:
             raise ValueError("orders has a row with a blank order_id.")
+        doc_date = parse_user_date(record[columns["doc_date"]], f"{order_id} doc_date")
+        rdd = parse_user_date(record[columns["rdd"]], f"{order_id} rdd")
         cleaned.append(
             {
                 "order_id": order_id,
-                "ship_to": norm_id(row["ship_to"]),
-                "doc_date": row["doc_date"],
-                "rdd": row["rdd"],
-                "cases": _require_number(row["cases"], order_id, "cases"),
-                "weight_kg": _require_number(row["weight_kg"], order_id, "weight_kg"),
-                "volume_m3": _require_number(row["volume_m3"], order_id, "volume_m3"),
+                "ship_to": norm_id(record[columns["ship_to"]]),
+                "doc_date": doc_date,
+                "rdd": rdd,
+                "cases": _require_number(record[columns["cases"]], order_id, "cases"),
+                "weight_kg": _require_number(record[columns["weight_kg"]], order_id, "weight_kg"),
+                "volume_m3": _require_number(record[columns["volume_m3"]], order_id, "volume_m3"),
+                "po_numbers": "" if po_column is None else clean_po_numbers(record[po_column]),
+                "original_rdd": rdd,
+                "effective_rdd": rdd,
+                "override_reason": "",
             }
         )
     return cleaned
 
 
 def _customer_rows(frame: pd.DataFrame) -> list[dict]:
-    rows = _take(
-        frame,
-        ["ship_to", "province", "group", "service", "sla_days", "name"],
-        "customers",
-    )
+    columns = column_map(frame)
+    required = ["ship_to", "province", "group", "service", "sla_days", "name"]
+    missing = [name for name in required if name not in columns]
+    if missing:
+        raise ValueError("customers is missing columns: " + ", ".join(missing))
+    optional = {
+        name: columns[name]
+        for name in (
+            "allow_truck_pricing",
+            "allow_case_pricing",
+            "allow_sharing",
+            "in_master",
+            "service_master",
+            "service_contract",
+            "service_conflict",
+            "customer_name",
+        )
+        if name in columns
+    }
+    rows = []
+    for record in frame.to_dict("records"):
+        rows.append({name: record[columns[name]] for name in required})
+        rows[-1].update({name: record[source] for name, source in optional.items()})
     cleaned = []
     seen: set[str] = set()
     for row in rows:
@@ -403,6 +551,19 @@ def _customer_rows(frame: pd.DataFrame) -> list[dict]:
             raise ValueError(f"Duplicate customer {ship_to}.")
         seen.add(ship_to)
         sla = parse_number(row["sla_days"])
+        if isinstance(sla, float) and not sla.is_integer():
+            raise ValueError(f"Customer {ship_to} has a fractional sla_days.")
+        name = row.get("customer_name")
+        if name is None or str(name).strip() == "":
+            name = row["name"]
+        in_master = None
+        if "in_master" in row:
+            in_master = parse_bool(row["in_master"], blank_default=True, field_name=f"{ship_to} in_master")
+        conflict = False
+        if "service_conflict" in row:
+            conflict = parse_bool(
+                row["service_conflict"], blank_default=False, field_name=f"{ship_to} service_conflict"
+            )
         cleaned.append(
             {
                 "ship_to": ship_to,
@@ -410,7 +571,14 @@ def _customer_rows(frame: pd.DataFrame) -> list[dict]:
                 "group": "" if row["group"] is None else str(row["group"]).strip(),
                 "service": "" if row["service"] is None else str(row["service"]).strip(),
                 "sla_days": None if sla is None else int(sla),
-                "name": "" if row["name"] is None else str(row["name"]).strip(),
+                "name": "" if name is None else str(name).strip(),
+                "allow_truck": _permission(row, "allow_truck_pricing", ship_to),
+                "allow_case": _permission(row, "allow_case_pricing", ship_to),
+                "allow_sharing": _permission(row, "allow_sharing", ship_to),
+                "in_master": in_master,
+                "service_master": "" if row.get("service_master") is None else str(row.get("service_master")).strip(),
+                "service_contract": "" if row.get("service_contract") is None else str(row.get("service_contract")).strip(),
+                "service_conflict": conflict,
             }
         )
     return cleaned
@@ -439,30 +607,61 @@ def _require_number(value: object, order_id: str, field: str) -> float:
 def _require_date(value: object, owner: object, field: str) -> date:
     if value is None or str(value).strip().lower() in {"", "nan", "none", "<na>", "nat"}:
         raise ValueError(f"{owner} is missing {field}.")
-    parsed = _optional_date(value)
-    if parsed is None:
-        raise ValueError(f"{owner} has an invalid {field}: {value!r}.")
-    return parsed
+    try:
+        return coerce_stored_date(value, f"{owner} {field}")
+    except ValueError as exc:
+        raise ValueError(f"{owner} has an invalid {field}: {value!r}.") from exc
 
 
 def _optional_date(value: object) -> date | None:
     if value is None:
         return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value).strip()
-    if text.lower() in {"", "nan", "none", "<na>", "nat"}:
-        return None
-    if "T" in text:
-        text = text.split("T", 1)[0]
-    if " " in text:
-        text = text.split(" ", 1)[0]
     try:
-        return date.fromisoformat(text[:10])
+        return coerce_stored_date(value, "date")
     except ValueError:
         return None
+
+
+def _permission(row: dict, name: str, ship_to: str) -> bool:
+    if name not in row:
+        return True
+    return parse_bool(row[name], blank_default=True, field_name=f"{ship_to} {name}")
+
+
+def _stored_bool(record: dict, name: str) -> bool:
+    if name not in record:
+        return True
+    value = record[name]
+    if isinstance(value, bool):
+        return value
+    return parse_bool(value, blank_default=True, field_name=name)
+
+
+def _iso(value: object) -> str:
+    if isinstance(value, date):
+        return value.isoformat()
+    return "" if value is None else str(value)
+
+
+def _po_spans(frame: pd.DataFrame) -> dict[str, list[str]]:
+    columns = column_map(frame)
+    if "po_numbers" not in columns or "ship_to" not in columns:
+        return {}
+    owners: dict[str, set[str]] = {}
+    for record in frame.to_dict("records"):
+        ship_to = norm_id(record[columns["ship_to"]])
+        for token in clean_po_numbers(record[columns["po_numbers"]]).split(";"):
+            if not token:
+                continue
+            owners.setdefault(token, set()).add(ship_to)
+    return {po: sorted(ship_tos) for po, ship_tos in owners.items() if len(ship_tos) > 1}
+
+
+def _optional_csv(folder: Path, name: str) -> pd.DataFrame | None:
+    path = folder / name
+    if not path.is_file():
+        return None
+    return _read_csv(path)
 
 
 def _clean_service(value: object) -> str:
@@ -493,8 +692,26 @@ _SHIPMENT_COLUMNS = [
     "province",
     "group",
     "order_ids",
+    "allow_truck_pricing",
+    "allow_case_pricing",
+    "allow_sharing",
 ]
-_EXCLUSION_COLUMNS = ["order_id", "shipment_id", "category", "reason", "cases", "kg", "m3"]
+_EXCLUSION_COLUMNS = [
+    "order_id",
+    "shipment_id",
+    "ship_to",
+    "customer_name",
+    "province",
+    "category",
+    "reason",
+    "cases",
+    "kg",
+    "m3",
+    "po_numbers",
+    "original_rdd",
+    "effective_rdd",
+    "override_reason",
+]
 _LINE_COLUMNS = [
     "order_id",
     "shipment_id",
@@ -504,4 +721,10 @@ _LINE_COLUMNS = [
     "cases",
     "weight_kg",
     "volume_m3",
+    "po_numbers",
+    "original_rdd",
+    "effective_rdd",
+    "override_reason",
+    "customer_name",
+    "province",
 ]

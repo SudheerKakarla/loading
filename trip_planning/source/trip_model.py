@@ -53,7 +53,9 @@ def solve_trip_model(candidates: Sequence, shipment_ids: Sequence[str], cfg: Tri
     if len(ids) != len(tuple(shipment_ids)):
         raise ValueError("shipment_ids contains a duplicate.")
     early_weight, upgrade_weight = _weights(len(ids), cfg)
-    penalty = _penalty(candidates)
+    _require_weight_bound(len(ids), cfg, early_weight, upgrade_weight)
+    _require_candidates(candidates, ids)
+    penalty = _penalty(candidates, cfg)
     if not ids:
         return SolveResult((), (), 0.0, 0.0, 0.0, 0.0, penalty, early_weight, upgrade_weight, (), 0.0)
 
@@ -108,12 +110,52 @@ def _weights(n_shipments: int, cfg: TripConfig) -> tuple[float, float]:
     return early, upgrade
 
 
-def _penalty(candidates: Sequence) -> float:
+def _require_weight_bound(n_shipments: int, cfg: TripConfig, early: float, upgrade: float) -> None:
+    total = n_shipments * (cfg.max_early_days * early + upgrade)
+    if total >= 1:
+        raise ValueError(
+            "Tie-break weights can reach 1 THB across this plan. "
+            "Lower early_delivery_weight or upgrade_weight."
+        )
+
+
+def _penalty(candidates: Sequence, cfg: TripConfig | None = None) -> float:
+    """Uncapped: one baht above the solo costs. Capped: one baht above the dearest covering cost."""
+    if cfg is not None and cfg.max_trucks is not None:
+        dearest: dict[str, float] = {}
+        for candidate in candidates:
+            for shipment_id in candidate.member_ids:
+                cost = float(candidate.cost)
+                if shipment_id not in dearest or cost > dearest[shipment_id]:
+                    dearest[shipment_id] = cost
+        return float(sum(dearest.values()) + 1.0)
     solos: dict[str, float] = {}
     for candidate in candidates:
         if candidate.is_solo and len(candidate.member_ids) == 1:
             solos[candidate.member_ids[0]] = float(candidate.cost)
     return float(sum(solos.values()) + 1.0)
+
+
+def _require_candidates(candidates: Sequence, shipment_ids: Sequence[str]) -> None:
+    known = set(shipment_ids)
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate.candidate_id in seen:
+            raise ValueError(f"Duplicate candidate id {candidate.candidate_id}.")
+        seen.add(candidate.candidate_id)
+        if not candidate.member_ids:
+            raise ValueError(f"Candidate {candidate.candidate_id} has no shipments.")
+        missing = [shipment_id for shipment_id in candidate.member_ids if shipment_id not in known]
+        if missing:
+            raise ValueError(
+                f"Candidate {candidate.candidate_id} names unknown shipments: {', '.join(missing)}."
+            )
+        if not math.isfinite(float(candidate.cost)) or float(candidate.cost) < -1e-9:
+            raise ValueError(f"Candidate {candidate.candidate_id} has a cost that is not finite and nonnegative.")
+        if isinstance(candidate.n_trucks, bool) or not isinstance(candidate.n_trucks, int) or candidate.n_trucks < 0:
+            raise ValueError(f"Candidate {candidate.candidate_id} has an invalid truck count.")
+        if candidate.early_days < 0 or candidate.upgrade < 0:
+            raise ValueError(f"Candidate {candidate.candidate_id} has a negative tie-break count.")
 
 
 def _components(shipment_ids: Sequence[str], candidates: Sequence) -> list[tuple[tuple[str, ...], list]]:
@@ -240,20 +282,19 @@ def _solve_block(
     )
     status_name = _STATUS.get(int(result.status), "other")
     gap = _gap(result)
-    usable = result.x is not None and int(result.status) in {0, 1}
+    chosen, unplanned = _read_solution(result, candidates, u_index, width)
+    usable = chosen is not None and _fleet_ok(chosen, cfg)
+    if usable:
+        try:
+            _require_partition(ids, chosen, unplanned)
+        except RuntimeError:
+            usable = False
     if not usable:
-        raise RuntimeError(
-            f"Component {component_id} ({', '.join(ids)}) is {status_name} and has no incumbent."
-        )
-    chosen = []
-    unplanned = []
-    for index, candidate in enumerate(candidates):
-        if float(result.x[index]) >= 0.5:
-            chosen.append(candidate)
-    for shipment_id, index in u_index.items():
-        if float(result.x[index]) >= 0.5:
-            unplanned.append(shipment_id)
-    _require_partition(ids, chosen, unplanned)
+        chosen, unplanned = _fallback(candidates, ids, cfg)
+        status_name = f"fallback_{status_name}"
+        gap = float("inf")
+    else:
+        _require_partition(ids, chosen, unplanned)
     total_cost = float(sum(candidate.cost for candidate in chosen))
     tie_break = float(
         sum(
@@ -270,6 +311,77 @@ def _solve_block(
         "penalty_total": penalty_total,
         "status": ComponentStatus(component_id, ids, status_name, gap, len(candidates)),
     }
+
+
+def _read_solution(result, candidates: Sequence, u_index: dict[str, int], width: int):
+    if result.x is None or int(result.status) not in {0, 1} or len(result.x) != width:
+        return None, None
+    chosen = []
+    unplanned = []
+    for index, value in enumerate(result.x):
+        number = float(value)
+        if not math.isfinite(number) or number < -1e-5 or number > 1 + 1e-5:
+            return None, None
+        rounded = int(round(number))
+        if abs(number - rounded) > 1e-4:
+            return None, None
+        if rounded == 0:
+            continue
+        if index < len(candidates):
+            chosen.append(candidates[index])
+        else:
+            for shipment_id, variable in u_index.items():
+                if variable == index:
+                    unplanned.append(shipment_id)
+    return chosen, unplanned
+
+
+def _fleet_ok(chosen: Sequence, cfg: TripConfig) -> bool:
+    if cfg.max_trucks is None:
+        return True
+    used: dict[object, int] = defaultdict(int)
+    for candidate in chosen:
+        used[candidate.ship_date] += int(candidate.n_trucks)
+    return all(count <= cfg.max_trucks for count in used.values())
+
+
+def _fallback(candidates: Sequence, shipment_ids: Sequence[str], cfg: TripConfig) -> tuple[list, list]:
+    """A feasible cover. It does not claim the best coverage or the best cost."""
+    if cfg.max_trucks is None:
+        best = {}
+        for candidate in candidates:
+            if not candidate.is_solo or len(candidate.member_ids) != 1:
+                continue
+            shipment_id = candidate.member_ids[0]
+            current = best.get(shipment_id)
+            rank = (candidate.early_days, candidate.cost, candidate.candidate_id)
+            if current is None or rank < current[0]:
+                best[shipment_id] = (rank, candidate)
+        chosen = [item[1] for item in best.values()]
+        covered = set(best)
+        return chosen, [shipment_id for shipment_id in shipment_ids if shipment_id not in covered]
+    remaining = set(shipment_ids)
+    used: dict[object, int] = defaultdict(int)
+    chosen = []
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            -len(candidate.member_ids),
+            candidate.cost,
+            candidate.early_days,
+            candidate.candidate_id,
+        ),
+    )
+    for candidate in ranked:
+        if any(shipment_id not in remaining for shipment_id in candidate.member_ids):
+            continue
+        if used[candidate.ship_date] + int(candidate.n_trucks) > cfg.max_trucks:
+            continue
+        chosen.append(candidate)
+        used[candidate.ship_date] += int(candidate.n_trucks)
+        for shipment_id in candidate.member_ids:
+            remaining.discard(shipment_id)
+    return chosen, [shipment_id for shipment_id in shipment_ids if shipment_id in remaining]
 
 
 def _require_partition(shipment_ids: Sequence[str], chosen: Sequence, unplanned: Sequence[str]) -> None:

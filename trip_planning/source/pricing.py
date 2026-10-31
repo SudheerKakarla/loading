@@ -35,6 +35,8 @@ class SoloQuote:
     case_cost: float | None
     fleet_cost: float | None
     fleet: FleetMix | None
+    fleet_status: str = "optimal"
+    fleet_gap: float = 0.0
 
 
 def solo_quote(
@@ -44,23 +46,27 @@ def solo_quote(
     volume_m3: float,
     rate: RateCard,
     trucks: Sequence[TruckType],
+    *,
+    allow_truck: bool = True,
+    allow_case: bool = True,
 ) -> SoloQuote | None:
-    """FTL pays the cheapest fleet. LTL pays the cheaper of case and fleet.
+    """FTL pays a permitted fleet. LTL pays the cheaper permitted branch.
 
-    Equal case and fleet costs stay on the truck, so a real truck is not hidden
-    by a tie. A case-priced quote still carries the fleet it declined.
+    Equal case and fleet costs stay on the truck. A forbidden branch is not
+    priced back in. A case quote still carries the permitted fleet it declined.
     """
-    fleet = cheapest_fleet(weight_kg, volume_m3, offers_for(rate, trucks))
+    fleet = cheapest_fleet(weight_kg, volume_m3, offers_for(rate, trucks)) if allow_truck else None
     fleet_cost = None if fleet is None else float(fleet.cost)
+    fleet_status = "optimal" if fleet is None else fleet.status
+    fleet_gap = 0.0 if fleet is None else float(fleet.gap)
     rate_per_case = case_rate_of(rate)
-    case_cost = None if rate_per_case is None else float(rate_per_case) * float(cases)
-    if str(service).upper() == "LTL" and case_cost is not None and (
-        fleet_cost is None or case_cost < fleet_cost - 1e-9
-    ):
-        return SoloQuote(float(case_cost), "case", case_cost, fleet_cost, fleet)
+    case_allowed = str(service).upper() == "LTL" and allow_case and rate_per_case is not None
+    case_cost = None if not case_allowed else float(rate_per_case) * float(cases)
+    if case_cost is not None and (fleet_cost is None or case_cost < fleet_cost - 1e-9):
+        return SoloQuote(float(case_cost), "case", case_cost, fleet_cost, fleet, fleet_status, fleet_gap)
     if fleet is None or fleet_cost is None:
         return None
-    return SoloQuote(fleet_cost, "truck", case_cost, fleet_cost, fleet)
+    return SoloQuote(fleet_cost, "truck", case_cost, fleet_cost, fleet, fleet_status, fleet_gap)
 
 
 def solo_cost(
@@ -78,6 +84,8 @@ def solo_cost(
         shipment.volume_m3,
         rate,
         trucks,
+        allow_truck=bool(getattr(shipment, "allow_truck", True)),
+        allow_case=bool(getattr(shipment, "allow_case", True)),
     )
 
 
@@ -107,18 +115,31 @@ def trip_cost(
         seen.add(member.ship_to)
         trip_rates.append(float(rate.trip[truck_type]))
         handlings.append(float(rate.handling.get(truck_type, 0.0)))
+    truck_allowed = all(bool(getattr(member, "allow_truck", True)) for member in members)
     truck_cost = max(trip_rates) + (_handling_charge(handlings, cfg))
-    if any(str(member.service).upper() != "LTL" for member in members):
+    case_total, case_allowed = _case_branch(members, rates)
+    if truck_allowed and case_allowed and case_total is not None and case_total < truck_cost - 1e-9:
+        return case_total, "case"
+    if truck_allowed and (not case_allowed or case_total is None or truck_cost <= case_total + 1e-9):
         return truck_cost, "truck"
-    case_total = 0.0
+    if case_allowed and case_total is not None:
+        return case_total, "case"
+    return None
+
+
+def _case_branch(members: Sequence[_Member], rates: Mapping[str, RateCard]) -> tuple[float | None, bool]:
+    """Case billing needs every member to be LTL, case-permitted, and actually rated."""
+    if any(str(member.service).upper() != "LTL" for member in members):
+        return None, False
+    if any(not bool(getattr(member, "allow_case", True)) for member in members):
+        return None, False
+    total = 0.0
     for member in members:
         per_case = case_rate_of(rates[member.ship_to])
         if per_case is None:
-            return truck_cost, "truck"
-        case_total += float(per_case) * float(member.cases)
-    if case_total < truck_cost - 1e-9:
-        return case_total, "case"
-    return truck_cost, "truck"
+            return None, False
+        total += float(per_case) * float(member.cases)
+    return total, True
 
 
 def _handling_charge(handlings: Sequence[float], cfg: TripConfig) -> float:

@@ -1,0 +1,35 @@
+{
+  "baseline": "transit0",
+  "scenarios": [
+    {
+      "name": "transit0",
+      "config": {"transit_days": 0},
+      "truck_overrides": [],
+      "assumptions": ["Unapproved reference. Default elapsed transit."]
+    },
+    {
+      "name": "transit1",
+      "config": {"transit_days": 1},
+      "truck_overrides": [],
+      "assumptions": ["Unapproved reference. One elapsed transit day."]
+    },
+    {
+      "name": "transit2",
+      "config": {"transit_days": 2},
+      "truck_overrides": [],
+      "assumptions": ["Unapproved reference. Two elapsed transit days."]
+    },
+    {
+      "name": "cap8",
+      "config": {"max_trucks": 8},
+      "truck_overrides": [],
+      "assumptions": ["Unapproved reference. Eight counted trucks per departure date."]
+    },
+    {
+      "name": "cap4",
+      "config": {"max_trucks": 4},
+      "truck_overrides": [],
+      "assumptions": ["Unapproved reference. Four counted trucks per departure date."]
+    }
+  ]
+}

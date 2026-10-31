@@ -14,9 +14,11 @@ from pathlib import Path
 import pandas as pd
 
 from candidates import generate_candidates
-from config import TripConfig, config_field_names, load_config_file
+from config import TripConfig, config_field_names, load_config_file, norm_id
+from provenance import file_sha256
 from reporting import PlanResult, assemble_plan, summary_map, write_plan
-from shipments import build_shipments, read_inputs
+from retrospective import load_calendars
+from shipments import RECOGNIZED_INPUTS, build_shipments, read_inputs
 from trip_model import solve_trip_model
 
 
@@ -27,13 +29,33 @@ def plan(
     trucks: pd.DataFrame,
     cfg: TripConfig | None = None,
     overrides: pd.DataFrame | None = None,
+    *,
+    planning_calendar: pd.DataFrame | None = None,
+    delivery_date_overrides: pd.DataFrame | None = None,
+    weekly_calendar: pd.DataFrame | None = None,
 ) -> PlanResult:
     """Run the pipeline on tables already in memory."""
     started = time.perf_counter()
     if cfg is None:
         cfg = TripConfig()
-    built = build_shipments(orders, customers, rates, trucks, cfg)
-    candidates = generate_candidates(built.shipments, rates, trucks, cfg, overrides)
+    customer_ids = _customer_ids(customers)
+    calendar = load_calendars(planning_calendar, weekly_calendar, customer_ids)
+    built = build_shipments(
+        orders,
+        customers,
+        rates,
+        trucks,
+        cfg,
+        delivery_date_overrides=delivery_date_overrides,
+    )
+    candidates = generate_candidates(
+        built.shipments,
+        rates,
+        trucks,
+        cfg,
+        overrides,
+        planning_calendar=calendar,
+    )
     solved = solve_trip_model(
         candidates.candidates,
         [shipment.shipment_id for shipment in candidates.shipments],
@@ -101,23 +123,40 @@ def config_from_args(args: argparse.Namespace) -> TripConfig:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    cfg = config_from_args(args)
-    tables = read_inputs(args.inputs)
-    result = plan(
-        tables.orders,
-        tables.customers,
-        tables.rates,
-        tables.trucks,
-        cfg,
-        tables.overrides,
-    )
-    write_plan(result, args.out)
-    _print_result(result, args.out)
-    if not result.ok:
-        for error in result.errors:
-            print(error, file=sys.stderr)
+    try:
+        args = build_parser().parse_args(argv)
+        cfg = config_from_args(args)
+        before = _input_hashes(args.inputs)
+        tables = read_inputs(args.inputs)
+        result = plan(
+            tables.orders,
+            tables.customers,
+            tables.rates,
+            tables.trucks,
+            cfg,
+            tables.overrides,
+            planning_calendar=tables.planning_calendar,
+            delivery_date_overrides=tables.delivery_date_overrides,
+            weekly_calendar=tables.weekly_calendar,
+        )
+        after = _input_hashes(args.inputs)
+        if before != after:
+            raise ValueError("Input files changed while the plan was running.")
+        if not result.ok:
+            for error in result.errors:
+                print(error, file=sys.stderr)
+            return 1
+        result.metadata["cli_options"] = _cli_options(args)
+        result.metadata["input_files"] = before
+        result.metadata["config_file"] = "" if args.config is None else file_sha256(args.config)
+        write_plan(result, args.out)
+    except (ValueError, FileNotFoundError, FileExistsError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
         return 1
+    _print_result(result, args.out)
+    gap = summary_map(result).get("solver_gap_max", "")
+    status = summary_map(result).get("solver_status", "")
+    print(f"Solver: {status} gap {gap}")
     return 0
 
 
@@ -132,10 +171,42 @@ def _print_result(result: PlanResult, out_dir: Path) -> None:
     saving = values.get("saving_thb", "")
     if saving:
         print(f"Saving: {saving} THB ({values.get('saving_percent', '')}%)")
-    print(f"Solver: {values.get('solver_status', '')} gap {values.get('solver_gap_max', '')}")
     print(f"Runtime: {result.runtime_s:.2f} s")
     print(f"Wrote {out_dir}")
     print(values.get("assumptions", ""))
+
+
+def _customer_ids(customers: pd.DataFrame) -> set[str]:
+    columns = {str(column).strip().lower(): column for column in customers.columns}
+    if "ship_to" not in columns:
+        raise ValueError("customers is missing column ship_to.")
+    return {norm_id(value) for value in customers[columns["ship_to"]] if norm_id(value)}
+
+
+def _input_hashes(folder: Path) -> dict[str, str]:
+    found = {}
+    for name in RECOGNIZED_INPUTS:
+        path = Path(folder) / name
+        if path.is_file():
+            found[name] = file_sha256(path)
+    return found
+
+
+def _cli_options(args: argparse.Namespace) -> dict:
+    return {
+        "inputs": str(args.inputs),
+        "out": str(args.out),
+        "config": "" if args.config is None else str(args.config),
+        "max_shipments_per_trip": args.max_shipments_per_trip,
+        "max_early_days": args.max_early_days,
+        "transit_days": args.transit_days,
+        "compat_mode": args.compat_mode,
+        "handling_basis": args.handling_basis,
+        "max_drops_per_trip": args.max_drops_per_trip,
+        "max_trucks": args.max_trucks,
+        "time_limit": args.time_limit,
+        "solo_only": args.solo_only,
+    }
 
 
 if __name__ == "__main__":

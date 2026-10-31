@@ -11,6 +11,17 @@ import pandas as pd
 from baseline_cost import _format_metric, build_baseline, parse_rates, parse_trucks
 from candidates import CandidateSet
 from config import TRUCK_TYPES, TripConfig
+from provenance import (
+    config_payload,
+    environment_versions,
+    file_sha256,
+    git_revision,
+    new_run_id,
+    table_sha256,
+    utc_now,
+)
+from publication import publish_plan, remove_tree, staging_dir
+from retrospective import empty_calendar
 from shipments import Shipment, ShipmentBuild, build_flags
 from trip_model import SolveResult
 
@@ -30,11 +41,45 @@ TRIP_COLUMNS = [
     "cost",
     "price_basis",
     "shipment_ids",
+    "po_numbers",
 ]
 TRIP_SHIPMENT_COLUMNS = ["trip_id", "shipment_id", "ship_to", "rdd", "ship_date", "early_days"]
-TRIP_ORDER_COLUMNS = ["order_id", "trip_id"]
-EXCLUSION_COLUMNS = ["order_id", "shipment_id", "category", "reason", "cases", "kg", "m3"]
+TRIP_ORDER_COLUMNS = [
+    "order_id",
+    "trip_id",
+    "po_numbers",
+    "original_rdd",
+    "effective_rdd",
+    "override_reason",
+]
+EXCLUSION_COLUMNS = [
+    "order_id",
+    "shipment_id",
+    "ship_to",
+    "customer_name",
+    "province",
+    "category",
+    "reason",
+    "cases",
+    "kg",
+    "m3",
+    "po_numbers",
+    "original_rdd",
+    "effective_rdd",
+    "override_reason",
+]
 FLAG_COLUMNS = ["flag", "key", "detail"]
+MISSING_RATE_COLUMNS = [
+    "ship_to",
+    "customer_name",
+    "province",
+    "orders",
+    "cases",
+    "kg",
+    "m3",
+    "first_rdd",
+    "last_rdd",
+]
 
 
 @dataclass
@@ -55,6 +100,12 @@ class PlanResult:
     runtime_s: float
     n_shipments: int
     n_candidates: int
+    missing_rates: pd.DataFrame
+    shipments: pd.DataFrame
+    baseline_shipments: pd.DataFrame
+    baseline_summary: pd.DataFrame
+    order_scope: pd.DataFrame
+    metadata: dict
 
     @property
     def ok(self) -> bool:
@@ -81,6 +132,8 @@ def assemble_plan(
     truck_types = parse_trucks(trucks)
     by_id = {shipment.shipment_id: shipment for shipment in candidates.shipments}
     past_due = set(candidates.past_due_ids)
+    calendar_blocked = set(candidates.calendar_unavailable_ids)
+    calendar = candidates.calendar if candidates.calendar is not None else empty_calendar()
     planned_ids = [shipment_id for candidate in solved.chosen for shipment_id in candidate.member_ids]
     planned = set(planned_ids)
     unplanned = set(solved.unplanned_ids)
@@ -113,6 +166,7 @@ def assemble_plan(
                 "cost": candidate.cost,
                 "price_basis": candidate.price_basis,
                 "shipment_ids": ";".join(shipment_ids),
+                "po_numbers": _po_list(lines_by_shipment, shipment_ids),
             }
         )
         for member in sorted(members, key=lambda shipment: shipment.shipment_id):
@@ -129,23 +183,27 @@ def assemble_plan(
             )
         for shipment_id in shipment_ids:
             for line in sorted(lines_by_shipment.get(shipment_id, []), key=lambda item: item["order_id"]):
-                order_rows.append({"order_id": line["order_id"], "trip_id": trip_id})
+                order_rows.append(
+                    {
+                        "order_id": line["order_id"],
+                        "trip_id": trip_id,
+                        "po_numbers": line.get("po_numbers", ""),
+                        "original_rdd": _iso(line.get("original_rdd", line.get("rdd"))),
+                        "effective_rdd": _iso(line.get("effective_rdd", line.get("rdd"))),
+                        "override_reason": line.get("override_reason", ""),
+                    }
+                )
 
     business = []
     for shipment_id in sorted(unplanned):
-        reason = "past_due" if shipment_id in past_due else "fleet_limit"
+        if shipment_id in past_due:
+            reason = "past_due"
+        elif shipment_id in calendar_blocked:
+            reason = "calendar_unavailable"
+        else:
+            reason = "fleet_limit"
         for line in sorted(lines_by_shipment.get(shipment_id, []), key=lambda item: item["order_id"]):
-            business.append(
-                {
-                    "order_id": line["order_id"],
-                    "shipment_id": shipment_id,
-                    "category": "business",
-                    "reason": reason,
-                    "cases": line["cases"],
-                    "kg": line["weight_kg"],
-                    "m3": line["volume_m3"],
-                }
-            )
+            business.append(_exclusion_from_line(line, shipment_id, "business", reason))
     exclusions = pd.concat(
         [built.exclusions, _frame(business, EXCLUSION_COLUMNS)],
         ignore_index=True,
@@ -155,20 +213,30 @@ def assemble_plan(
             ["category", "reason", "order_id"], kind="mergesort"
         ).reset_index(drop=True)
 
-    flags = build_flags(orders, customers, rates, trucks)
-    _baseline_detail, baseline_summary = build_baseline(built.shipments, rate_cards, truck_types)
-    solo_costs = {
-        candidate.member_ids[0]: candidate.cost
-        for candidate in candidates.candidates
-        if candidate.is_solo
+    effective = {
+        str(row["order_id"]): row["effective_rdd"]
+        for row in built.effective_orders.to_dict("records")
     }
-    baseline_cost = float(sum(solo_costs.values()))
+    baseline_detail, baseline_summary = build_baseline(built.shipments, rate_cards, truck_types)
+    flags = _solver_flags(
+        build_flags(orders, customers, rates, trucks, effective),
+        candidates,
+        solved,
+        baseline_summary,
+    )
+    baseline_cost = float(sum(cost for _shipment_id, cost in candidates.solo_baseline))
     baseline_all = float(baseline_summary["cheaper_cost"])
     dateable_left_out = sorted(unplanned - past_due)
     saving = None if dateable_left_out else baseline_cost - solved.total_cost
     saving_pct = None
     if saving is not None and baseline_cost > _TOL:
         saving_pct = 100.0 * saving / baseline_cost
+    sheet_cost = float(baseline_summary["sheet_rule_cost"])
+    sheet_blocked = bool(unplanned) or int(baseline_summary["sheet_rule_unpriced_shipments"]) > 0
+    sheet_saving = None if sheet_blocked else sheet_cost - solved.total_cost
+    sheet_saving_pct = None
+    if sheet_saving is not None and sheet_cost > _TOL:
+        sheet_saving_pct = 100.0 * sheet_saving / sheet_cost
 
     errors = _hard_rules(
         cfg,
@@ -181,6 +249,7 @@ def assemble_plan(
         unplanned,
         lines,
         exclusions,
+        calendar,
     )
     summary = _summary(
         cfg,
@@ -194,8 +263,14 @@ def assemble_plan(
         baseline_all,
         saving,
         saving_pct,
+        sheet_cost,
+        sheet_saving,
+        sheet_saving_pct,
         runtime_s,
     )
+    missing_rates = _missing_rates(exclusions)
+    scope = _order_scope(order_rows, lines, trip_rows)
+    metadata = _base_metadata(cfg, built, candidates, solved, baseline_summary, exclusions, missing_rates)
     return PlanResult(
         trips=_frame(trip_rows, TRIP_COLUMNS),
         trip_shipments=_frame(member_rows, TRIP_SHIPMENT_COLUMNS),
@@ -213,18 +288,42 @@ def assemble_plan(
         runtime_s=runtime_s,
         n_shipments=len(candidates.shipments),
         n_candidates=len(candidates.candidates),
+        missing_rates=missing_rates,
+        shipments=built.shipments,
+        baseline_shipments=baseline_detail,
+        baseline_summary=_metric_frame(baseline_summary),
+        order_scope=scope,
+        metadata=metadata,
     )
 
 
 def write_plan(result: PlanResult, out_dir: Path) -> None:
+    """Write ten CSVs and run_metadata.json. Refuse a directory that already holds a plan."""
+    if not result.ok:
+        raise ValueError("Refusing to publish a plan that failed its checks.")
     destination = Path(out_dir)
-    destination.mkdir(parents=True, exist_ok=True)
-    result.trips.to_csv(destination / "trips.csv", index=False)
-    result.trip_shipments.to_csv(destination / "trip_shipments.csv", index=False)
-    result.trip_orders.to_csv(destination / "trip_orders.csv", index=False)
-    result.exclusions.to_csv(destination / "exclusions.csv", index=False)
-    result.summary.to_csv(destination / "summary.csv", index=False)
-    result.flags.to_csv(destination / "flags.csv", index=False)
+    staging = staging_dir(destination)
+    remove_tree(staging)
+    staging.mkdir(parents=True)
+    try:
+        _write_table(staging / "trips.csv", result.trips)
+        _write_table(staging / "trip_shipments.csv", result.trip_shipments)
+        _write_table(staging / "trip_orders.csv", result.trip_orders)
+        _write_table(staging / "exclusions.csv", result.exclusions)
+        _write_table(staging / "missing_rate_customers.csv", result.missing_rates)
+        _write_table(staging / "summary.csv", result.summary)
+        _write_table(staging / "flags.csv", result.flags)
+        _write_table(staging / "shipments.csv", result.shipments)
+        _write_table(staging / "baseline_shipments.csv", result.baseline_shipments)
+        _write_table(staging / "baseline_summary.csv", result.baseline_summary)
+        result.metadata["output_files"] = {
+            path.name: file_sha256(path) for path in sorted(staging.glob("*.csv"))
+        }
+        _write_metadata(staging / "run_metadata.json", result.metadata)
+        publish_plan(staging, destination)
+    except Exception:
+        remove_tree(staging)
+        raise
 
 
 def _hard_rules(
@@ -238,36 +337,42 @@ def _hard_rules(
     unplanned: set[str],
     lines: list[dict],
     exclusions: pd.DataFrame,
+    calendar,
 ) -> list[str]:
     errors = []
     all_ids = {shipment.shipment_id for shipment in candidates.shipments}
     if planned & unplanned or planned | unplanned != all_ids:
         errors.append("Every built shipment must be in one trip or one business exclusion.")
-    if any(shipment_id not in candidates.past_due_ids and shipment_id in unplanned for shipment_id in unplanned):
-        if cfg.max_trucks is None:
-            errors.append("A shipment was left unplanned without a fleet limit.")
-    covered_solo = 0.0
+    allowed_left_out = set(candidates.past_due_ids) | set(candidates.calendar_unavailable_ids)
+    if cfg.max_trucks is None and any(shipment_id not in allowed_left_out for shipment_id in unplanned):
+        errors.append("A shipment was left unplanned without a fleet limit.")
+    baseline_map = dict(candidates.solo_baseline)
+    covered_solo = sum(baseline_map[shipment_id] for shipment_id in planned if shipment_id in baseline_map)
     for candidate in solved.chosen:
         members = [by_id[shipment_id] for shipment_id in candidate.member_ids]
-        covered_solo += sum(
-            item.cost
-            for item in candidates.candidates
-            if item.is_solo and item.member_ids[0] in candidate.member_ids
-        )
-        spread = (max(member.rdd for member in members) - min(member.rdd for member in members)).days
-        if spread > cfg.max_early_days:
-            errors.append(f"{candidate.candidate_id} RDD spread is {spread} days.")
+        if not calendar.dispatch_open(candidate.ship_date):
+            errors.append(f"{candidate.candidate_id} departs on a closed dispatch date.")
+        if len(members) >= 2 and any(not member.allow_sharing for member in members):
+            errors.append(f"{candidate.candidate_id} shares a shipment that is not allowed to share.")
+        if candidate.price_basis == "truck" and any(not member.allow_truck for member in members):
+            errors.append(f"{candidate.candidate_id} uses a truck price a member does not permit.")
+        if candidate.price_basis == "case" and any(
+            member.service != "LTL" or not member.allow_case for member in members
+        ):
+            errors.append(f"{candidate.candidate_id} uses a case price a member does not permit.")
         early_sum = 0
         for member in members:
             arrival = candidate.ship_date + timedelta(days=cfg.transit_for(member.province))
+            if not calendar.receiving_open(member.ship_to, arrival):
+                errors.append(f"{candidate.candidate_id} arrives for {member.shipment_id} on a closed date.")
             if arrival > member.rdd:
                 errors.append(f"{candidate.candidate_id} delivers {member.shipment_id} after its RDD.")
             if candidate.ship_date < member.release_date:
                 errors.append(f"{candidate.candidate_id} ships {member.shipment_id} before release.")
             ready = member.rdd - timedelta(days=cfg.transit_for(member.province))
             early = (ready - candidate.ship_date).days
-            if early < 0:
-                errors.append(f"{candidate.candidate_id} has negative early days for {member.shipment_id}.")
+            if early < 0 or early > cfg.max_early_days:
+                errors.append(f"{candidate.candidate_id} early days for {member.shipment_id} are outside the window.")
             early_sum += early
         if early_sum != candidate.early_days:
             errors.append(f"{candidate.candidate_id} early days do not match its members.")
@@ -282,9 +387,9 @@ def _hard_rules(
                         errors.append(
                             f"{candidate.candidate_id} uses {truck_type}, which {member.ship_to} does not offer."
                         )
-    if solved.total_cost > covered_solo + _TOL:
+    if cfg.max_trucks is None and solved.total_cost > covered_solo + 1 - 1e-9:
         errors.append(
-            f"Plan cost {solved.total_cost} is above the solo baseline {covered_solo} of the planned shipments."
+            f"Plan cost {solved.total_cost} is a full baht above the solo baseline {covered_solo}."
         )
     if abs(solved.total_cost + solved.tie_break_total + solved.penalty_total - solved.objective_value) > _TOL:
         errors.append("Objective does not equal cost plus tie-break plus penalty.")
@@ -327,6 +432,9 @@ def _summary(
     baseline_all: float,
     saving: float | None,
     saving_pct: float | None,
+    sheet_cost: float,
+    sheet_saving: float | None,
+    sheet_saving_pct: float | None,
     runtime_s: float,
 ) -> pd.DataFrame:
     planned_orders = {row["order_id"] for row in order_rows}
@@ -369,7 +477,10 @@ def _summary(
             load_kg += candidate.weight_kg
             load_m3 += candidate.volume_m3
     statuses = [component.status for component in solved.components]
-    if not statuses or all(status == "optimal" for status in statuses):
+    fallbacks = [status for status in statuses if status.startswith("fallback_")]
+    if fallbacks:
+        solver_status = fallbacks[0]
+    elif not statuses or all(status == "optimal" for status in statuses):
         solver_status = "optimal"
     elif any(status == "time_limit" for status in statuses):
         solver_status = "time_limit"
@@ -383,6 +494,9 @@ def _summary(
             ("baseline_cost_all_built", baseline_all),
             ("saving_thb", "" if saving is None else saving),
             ("saving_percent", "" if saving_pct is None else saving_pct),
+            ("sheet_rule_cost", sheet_cost),
+            ("saving_vs_sheet_rule_thb", "" if sheet_saving is None else sheet_saving),
+            ("saving_vs_sheet_rule_percent", "" if sheet_saving_pct is None else sheet_saving_pct),
             ("trips", len(trip_rows)),
             ("trips_multi_shipment", multi),
             ("trucks", sum(truck_counts.values())),
@@ -430,5 +544,168 @@ def _frame(rows: list[dict], columns: list[str]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(rows, columns=columns)
+
+
+def _iso(value: object) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        text = value.isoformat()
+        return text[:10] if "T" in text else str(value)[:10] if len(str(value)) >= 10 and str(value)[4:5] == "-" else text
+    text = str(value).strip()
+    return "" if text.lower() in {"nan", "none", "nat"} else text[:10]
+
+
+def _po_list(lines_by_shipment: dict[str, list[dict]], shipment_ids: list[str]) -> str:
+    found: list[str] = []
+    for shipment_id in shipment_ids:
+        for line in lines_by_shipment.get(shipment_id, []):
+            for token in str(line.get("po_numbers", "")).split(";"):
+                token = token.strip()
+                if token and token not in found:
+                    found.append(token)
+    return ";".join(sorted(found))
+
+
+def _exclusion_from_line(line: dict, shipment_id: str, category: str, reason: str) -> dict:
+    return {
+        "order_id": line["order_id"],
+        "shipment_id": shipment_id,
+        "ship_to": line.get("ship_to", ""),
+        "customer_name": line.get("customer_name", ""),
+        "province": line.get("province", ""),
+        "category": category,
+        "reason": reason,
+        "cases": line["cases"],
+        "kg": line["weight_kg"],
+        "m3": line["volume_m3"],
+        "po_numbers": line.get("po_numbers", ""),
+        "original_rdd": _iso(line.get("original_rdd", line.get("rdd"))),
+        "effective_rdd": _iso(line.get("effective_rdd", line.get("rdd"))),
+        "override_reason": line.get("override_reason", ""),
+    }
+
+
+def _solver_flags(flags: pd.DataFrame, candidates: CandidateSet, solved: SolveResult, baseline: dict) -> pd.DataFrame:
+    extra = []
+    if int(baseline.get("fleet_pricing_nonoptimal_shipments", 0) or 0) > 0:
+        extra.append(
+            {
+                "flag": "baseline_fleet_not_optimal",
+                "key": "baseline",
+                "detail": "at least one solo fleet price is not proven optimal",
+            }
+        )
+    if any(component.status != "optimal" for component in solved.components):
+        extra.append(
+            {
+                "flag": "solver_not_optimal",
+                "key": "trip_model",
+                "detail": ", ".join(f"{component.component_id}={component.status}" for component in solved.components),
+            }
+        )
+    if any(candidate.pricing_status not in {"", "optimal"} for candidate in candidates.candidates):
+        extra.append(
+            {
+                "flag": "candidate_pricing_not_optimal",
+                "key": "candidates",
+                "detail": "at least one candidate price is not proven optimal",
+            }
+        )
+    if not extra:
+        return flags
+    return pd.concat([flags, _frame(extra, FLAG_COLUMNS)], ignore_index=True).sort_values(
+        ["flag", "key"], kind="mergesort"
+    ).reset_index(drop=True)
+
+
+def _missing_rates(exclusions: pd.DataFrame) -> pd.DataFrame:
+    if exclusions.empty or "reason" not in exclusions.columns:
+        return _frame([], MISSING_RATE_COLUMNS)
+    subset = exclusions[exclusions["reason"].astype(str) == "no_rate"]
+    if subset.empty:
+        return _frame([], MISSING_RATE_COLUMNS)
+    rows = []
+    grouped = subset.groupby(["ship_to", "customer_name", "province"], dropna=False, sort=True)
+    for (ship_to, name, province), group in grouped:
+        dates = sorted(str(value) for value in group["effective_rdd"] if str(value).strip())
+        rows.append(
+            {
+                "ship_to": ship_to,
+                "customer_name": name,
+                "province": province,
+                "orders": int(group["order_id"].nunique()),
+                "cases": float(group["cases"].sum()),
+                "kg": float(group["kg"].sum()),
+                "m3": float(group["m3"].sum()),
+                "first_rdd": dates[0] if dates else "",
+                "last_rdd": dates[-1] if dates else "",
+            }
+        )
+    return _frame(rows, MISSING_RATE_COLUMNS)
+
+
+def _order_scope(order_rows: list[dict], lines: list[dict], trip_rows: list[dict]) -> pd.DataFrame:
+    by_order = {line["order_id"]: line for line in lines}
+    ship_dates = {row["trip_id"]: row["ship_date"] for row in trip_rows}
+    rows = []
+    for order in order_rows:
+        line = by_order.get(order["order_id"], {})
+        rows.append(
+            {
+                "order_id": order["order_id"],
+                "effective_rdd": order.get("effective_rdd", ""),
+                "cases": line.get("cases", 0),
+                "kg": line.get("weight_kg", 0),
+                "m3": line.get("volume_m3", 0),
+                "ship_date": ship_dates.get(order["trip_id"], ""),
+            }
+        )
+    return _frame(rows, ["order_id", "effective_rdd", "cases", "kg", "m3", "ship_date"])
+
+
+def _base_metadata(cfg, built, candidates, solved, baseline_summary, exclusions, missing_rates) -> dict:
+    root = Path(__file__).resolve().parents[2]
+    return {
+        "run_id": new_run_id(),
+        "created_utc": utc_now(),
+        "approval": "assumed_unapproved",
+        "config": config_payload(cfg),
+        "baseline_comparison": baseline_summary.get("baseline_comparison", ""),
+        "tie_weights": {"early": solved.early_weight, "upgrade": solved.upgrade_weight},
+        "penalty": solved.penalty,
+        "solver_statuses": [component.status for component in solved.components],
+        "solver_gaps": [component.gap if component.gap != float("inf") else "inf" for component in solved.components],
+        "optional_features": {
+            "permissions": True,
+            "dated_calendar": True,
+            "weekly_calendar": True,
+            "delivery_date_overrides": True,
+            "scenarios": True,
+        },
+        "calendar_rules": candidates.calendar.snapshot() if candidates.calendar is not None else empty_calendar().snapshot(),
+        "tables": {
+            "shipments": table_sha256(built.shipments),
+            "exclusions": table_sha256(exclusions),
+            "missing_rate_customers": table_sha256(missing_rates),
+            "effective_orders_sha256": table_sha256(built.effective_orders),
+        },
+        "environment": environment_versions(),
+        "git_revision": git_revision(root),
+    }
+
+
+def _metric_frame(summary: dict) -> pd.DataFrame:
+    return pd.DataFrame([{"metric": key, "value": _format_metric(value)} for key, value in summary.items()])
+
+
+def _write_table(path: Path, frame: pd.DataFrame) -> None:
+    frame.to_csv(path, index=False)
+
+
+def _write_metadata(path: Path, payload: dict) -> None:
+    import json
+
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 

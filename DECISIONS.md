@@ -74,6 +74,10 @@ Short facts we confirmed. Re-read CSVs if an exact pallet count or weight matter
 - Whether `--staged-assignment` should become the default. The weighted sum remains the default. See `order_picking/TRIED.md`.
 - The heaviest-picker cap was measured on 2026-10-22 as `--jack-tier-merges` and stays off. Loading order, the dock-staging count, and the 10% to 20% tour stress test were measured the same day and are not defaults. The dock still needs a real staging capacity before any space constraint. Aisle-segment congestion was not built. The lightest-picker cap stays closed.
 
+## 2026-10-31
+
+- Trip planning, `trip_planning/specification.md` section 5.1. LTL cheaper-of-two and same-province sharing are confirmed defaults of this module. Multi-drop pricing (max of the solo trip rates, plus per-drop handling) and `transit_days = 0` are provisional placeholders. The `multidrop` rate column stays a flag; it does not switch the formula. No carrier invoice and no lane table were added.
+
 ## 2026-10-22
 
 - Draft v0.2 is history. `order_picking/source/planning_optimizer_spec_v0.3.md` is the correction: `mip_gap` is not 0.01, `--staged-assignment` is the lexicographic mode and stays off by default, Phase 1 default is nearest neighbor plus directed 2-opt, and there is no `deadline_penalty_weight`. The equations stay in `order_picking_planning_optimizer_spec.md`.
